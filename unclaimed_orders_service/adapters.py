@@ -461,12 +461,13 @@ class BitrixContactNotificationRoute:
 
 @dataclass(frozen=True, slots=True)
 class BitrixContactClient:
-    """Read-only Bitrix24 contact lookup client."""
+    """Bitrix24 contact lookup and notification client."""
 
     webhook_base_url: str
     page_size: int = 50
     max_pages: int = 20
     excluded_openline_connectors: tuple[str, ...] = ("integracio_chat", "livechat")
+    allow_openline_notifications: bool = False
 
     async def find_contact_by_email(self, email: str) -> BitrixContactLookupResult:
         """Find the first Bitrix contact matching an email address."""
@@ -540,7 +541,13 @@ class BitrixContactClient:
         *,
         fallback_email: str | None,
     ) -> BitrixContactNotificationRoute:
-        """Prefer non-web Open Line chat, then fallback to e-mail."""
+        """Return the allowed customer notification route for a Bitrix contact."""
+        email = _optional_text(fallback_email)
+        if not self.allow_openline_notifications:
+            if email:
+                return BitrixContactNotificationRoute(channel="email", destination=email)
+            return BitrixContactNotificationRoute(channel="none", error="no_email_route")
+
         active_chats = await self.open_line_chats_for_contact(contact_id, active_only=True)
         route = self._first_openline_route(active_chats)
         if route is not None:
@@ -551,7 +558,6 @@ class BitrixContactClient:
         if route is not None:
             return route
 
-        email = _optional_text(fallback_email)
         if email:
             return BitrixContactNotificationRoute(channel="email", destination=email)
         return BitrixContactNotificationRoute(channel="none", error="no_openline_or_email")
@@ -564,7 +570,7 @@ class BitrixContactClient:
         subject: str,
         message: str,
     ) -> NotificationResult:
-        """Notify a contact through Open Line first, then CRM e-mail."""
+        """Notify a contact through the configured Bitrix route."""
         route = await self.resolve_contact_notification_route(
             contact_id,
             fallback_email=fallback_email,

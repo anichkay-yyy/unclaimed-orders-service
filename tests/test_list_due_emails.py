@@ -77,15 +77,15 @@ async def test_due_email_pipeline_uses_fivepost_extension_flag_over_erp_flag() -
     assert payload["bitrix_contact_found"] == 1
     assert payload["bitrix_contact_missing"] == 0
     assert payload["bitrix_contact_errors"] == 0
-    assert payload["notification_openline_routes"] == 1
-    assert payload["notification_email_fallback_routes"] == 0
+    assert payload["notification_openline_routes"] == 0
+    assert payload["notification_email_fallback_routes"] == 1
     assert payload["notification_missing_routes"] == 0
     assert payload["emails"] == []
     assert payload["samples"][0]["bitrix_contact_found"] is True
     assert payload["samples"][0]["bitrix_contact_id"] == "contact-100"
-    assert payload["samples"][0]["notification_channel"] == "openline"
-    assert payload["samples"][0]["notification_destination"] == "chat-100"
-    assert payload["samples"][0]["notification_connector_id"] == "telegrambot"
+    assert payload["samples"][0]["notification_channel"] == "email"
+    assert payload["samples"][0]["notification_destination"] == "client@example.com"
+    assert payload["samples"][0]["notification_connector_id"] is None
     assert payload["samples"][0]["already_extended"] is False
     assert payload["samples"][0]["already_extended_source"] == (
         "fivepost.expirationDateExtensionAllowed"
@@ -142,8 +142,6 @@ class FakeBitrix:
         fallback_email: str | None,
     ) -> BitrixContactNotificationRoute:
         return BitrixContactNotificationRoute(
-            channel="openline",
-            destination="chat-100",
-            connector_id="telegrambot",
-            active=True,
+            channel="email",
+            destination=fallback_email,
         )
