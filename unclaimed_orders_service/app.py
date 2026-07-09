@@ -155,7 +155,7 @@ async def unclaimed_orders_widget_state() -> dict[str, Any]:
 async def run_daily(request: DailyRunRequest | None = None) -> dict[str, Any]:
     """Run the daily Magnit Post/SafeRoute unclaimed-order check."""
     run_date = request.today if request and request.today else datetime.now(UTC).date()
-    return await _run_daily_once(run_date)
+    return await _run_daily_tracked(run_date, raise_errors=True)
 
 
 @app.get("/runs/cron")
@@ -182,6 +182,36 @@ async def _run_daily_once(run_date: date) -> dict[str, Any]:
 
     async with _daily_run_lock:
         return await _run_daily_for_date(run_date)
+
+
+async def _run_daily_tracked(run_date: date, *, raise_errors: bool) -> dict[str, Any]:
+    if _daily_run_lock.locked():
+        return {"status": "already_running", "today": run_date.isoformat()}
+
+    async with _daily_run_lock:
+        _cron_state.running = True
+        _cron_state.last_run_started_at = datetime.now(UTC)
+        _cron_state.last_run_finished_at = None
+        _cron_state.last_status = "running"
+        _cron_state.last_error = None
+        try:
+            _cron_state.last_summary = await _run_daily_for_date(run_date)
+        except Exception as exc:
+            _cron_state.last_status = "failed"
+            _cron_state.last_error = str(exc)
+            _cron_state.last_summary = {
+                "status": "failed",
+                "today": run_date.isoformat(),
+                "error": str(exc),
+            }
+            if raise_errors:
+                raise
+            return _cron_state.last_summary
+        finally:
+            _cron_state.running = False
+            _cron_state.last_run_finished_at = datetime.now(UTC)
+        _cron_state.last_status = "succeeded"
+        return _cron_state.last_summary
 
 
 async def _run_daily_for_date(run_date: date) -> dict[str, Any]:
@@ -237,23 +267,12 @@ async def _daily_cron_loop(config: CronConfig) -> None:
 
 async def _run_scheduled_daily(config: CronConfig) -> None:
     run_date = datetime.now(config.timezone).date()
-    _cron_state.running = True
-    _cron_state.last_run_started_at = datetime.now(UTC)
-    _cron_state.last_run_finished_at = None
-    _cron_state.last_status = "running"
-    _cron_state.last_error = None
-    try:
-        _cron_state.last_summary = await _run_daily_once(run_date)
-    except Exception as exc:
-        _cron_state.last_status = "failed"
-        _cron_state.last_error = str(exc)
-        _log.exception("unclaimed_orders_cron_run_failed")
-        return
-    finally:
-        _cron_state.running = False
-        _cron_state.last_run_finished_at = datetime.now(UTC)
-    if _cron_state.last_summary.get("status") == "already_running":
+    summary = await _run_daily_tracked(run_date, raise_errors=False)
+    if summary.get("status") == "already_running":
         _cron_state.last_status = "skipped_already_running"
+        return
+    if summary.get("status") == "failed":
+        _log.error("unclaimed_orders_cron_run_failed", extra={"error": summary.get("error")})
         return
     _cron_state.last_status = "succeeded"
     _log.info("unclaimed_orders_cron_run_succeeded")

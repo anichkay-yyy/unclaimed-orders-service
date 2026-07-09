@@ -176,11 +176,17 @@ class UnclaimedOrdersService:
                 )
             )
 
-            notification = await self._notifier.notify(
-                order,
-                subject=self._policy.subject,
-                message=build_client_message(order, extension),
-            )
+            try:
+                notification = await self._notifier.notify(
+                    order,
+                    subject=self._policy.subject,
+                    message=build_client_message(order, extension),
+                )
+            except Exception as exc:
+                decisions.append(
+                    await self._operator_task(order, _notification_failure_reason(exc))
+                )
+                continue
             decisions.append(
                 RunDecision(
                     order_id=order.external_id,
@@ -199,6 +205,18 @@ class UnclaimedOrdersService:
     async def _operator_task(self, order: PickupOrder, reason: str) -> RunDecision:
         await self._operator_tasks.create_task(order, reason=reason)
         return RunDecision(order.external_id, DecisionAction.OPERATOR_TASK, reason)
+
+
+def _notification_failure_reason(exc: Exception) -> str:
+    """Return a stable reason code for notification failures."""
+    message = str(exc)
+    if "Bitrix contact was not found" in message:
+        return "bitrix_contact_not_found"
+    if "has no customer e-mail" in message:
+        return "missing_customer_email"
+    if message:
+        return f"notification_failed:{type(exc).__name__}:{message}"
+    return f"notification_failed:{type(exc).__name__}"
 
 
 def build_client_message(order: PickupOrder, extension: ExtensionResult) -> str:

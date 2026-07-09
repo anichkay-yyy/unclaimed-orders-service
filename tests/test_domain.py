@@ -48,6 +48,26 @@ class FakeNotifier:
 
 
 @dataclass(slots=True)
+class FailingNotifier:
+    fail_order_id: str
+    messages: list[str] = field(default_factory=list)
+
+    async def notify(
+        self,
+        order: PickupOrder,
+        *,
+        subject: str,
+        message: str,
+    ) -> NotificationResult:
+        assert subject
+        if order.external_id == self.fail_order_id:
+            msg = f"Bitrix contact was not found for order {order.external_id}: None"
+            raise ValueError(msg)
+        self.messages.append(message)
+        return NotificationResult(NotificationChannel.BITRIX, order.bitrix_entity_id or "")
+
+
+@dataclass(slots=True)
 class FakeTasks:
     reasons: list[str] = field(default_factory=list)
 
@@ -180,6 +200,40 @@ async def test_skips_notification_when_extension_deadline_is_not_confirmed() -> 
     assert summary.decisions[0].reason == "extension_deadline_not_confirmed"
     assert carrier.extended == ["m-1"]
     assert notifier.messages == []
+
+
+async def test_records_notification_error_and_continues_next_order() -> None:
+    today = date(2026, 7, 4)
+    new_deadline = today + timedelta(days=6)
+    first_order = order(today + timedelta(days=1))
+    second_order = PickupOrder(
+        external_id="m-2",
+        recipient_name="Ольга",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="olga@example.com",
+        bitrix_entity_id="lead-2",
+    )
+    carrier = FakeCarrier(
+        orders=[first_order, second_order],
+        result=ExtensionResult(ok=True, new_deadline=new_deadline),
+    )
+    notifier = FailingNotifier(fail_order_id="m-1")
+    tasks = FakeTasks()
+
+    summary = await UnclaimedOrdersService(carrier, notifier, tasks).run_daily(today=today)
+
+    assert [decision.action for decision in summary.decisions] == [
+        DecisionAction.EXTENDED,
+        DecisionAction.OPERATOR_TASK,
+        DecisionAction.EXTENDED,
+        DecisionAction.NOTIFIED,
+    ]
+    assert summary.decisions[1].order_id == "m-1"
+    assert summary.decisions[1].reason == "bitrix_contact_not_found"
+    assert tasks.reasons == ["bitrix_contact_not_found"]
+    assert carrier.extended == ["m-1", "m-2"]
+    assert len(notifier.messages) == 1
 
 
 async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:

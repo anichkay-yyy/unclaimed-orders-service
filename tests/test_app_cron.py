@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from unclaimed_orders_service import app as app_module
-from unclaimed_orders_service.domain import DecisionAction, NotificationChannel
+from unclaimed_orders_service.domain import (
+    DecisionAction,
+    NotificationChannel,
+    RunDecision,
+    RunSummary,
+)
 
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
@@ -136,6 +141,90 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
             "reason": "extended_before_notification; client_notified",
         }
     ]
+
+
+def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-09",
+        "mode": "fivepost_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "order_id": "418858-mgdb2",
+                "action": DecisionAction.EXTENDED,
+                "reason": "extended_before_notification",
+                "new_deadline": "2026-07-14",
+            },
+            {
+                "order_id": "418858-mgdb2",
+                "action": DecisionAction.OPERATOR_TASK,
+                "reason": "bitrix_contact_not_found",
+                "new_deadline": "2026-07-14",
+            },
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["totals"] == {"checked": 1, "orders": 1, "success": 0, "errors": 1}
+    assert payload["rows"] == [
+        {
+            "order_id": "418858-mgdb2",
+            "carrier": "5post",
+            "result": "error",
+            "outcome": "operator_task",
+            "channel_label": "-",
+            "new_deadline": "2026-07-14",
+            "reason": "extended_before_notification; Контакт Bitrix не найден",
+        }
+    ]
+
+
+async def test_manual_run_updates_widget_state(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    service = _FakeDailyService(
+        RunSummary(
+            checked=1,
+            decisions=(
+                RunDecision(
+                    "418858-mgdb2",
+                    DecisionAction.OPERATOR_TASK,
+                    "bitrix_contact_not_found",
+                ),
+            ),
+        )
+    )
+    monkeypatch.setattr(app_module, "_build_daily_service", lambda: (service, "test_mode"))
+
+    try:
+        payload = await app_module._run_daily_tracked(date(2026, 7, 9), raise_errors=True)
+        last_status = app_module._cron_state.last_status
+        last_summary = app_module._cron_state.last_summary
+    finally:
+        _reset_cron_state()
+
+    assert payload["today"] == "2026-07-09"
+    assert payload["mode"] == "test_mode"
+    assert last_status == "succeeded"
+    assert last_summary == payload
+
+
+class _FakeDailyService:
+    def __init__(self, summary: RunSummary) -> None:
+        self.summary = summary
+
+    async def run_daily(self, *, today: date) -> RunSummary:
+        return self.summary
 
 
 def _reset_cron_state() -> None:

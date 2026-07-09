@@ -10,6 +10,12 @@ from unclaimed_orders_service.domain import DecisionAction
 
 WIDGET_PATH = "/widgets/unclaimed-orders"
 WIDGET_STATE_PATH = f"{WIDGET_PATH}/state"
+_REASON_LABELS = {
+    "bitrix_contact_not_found": "Контакт Bitrix не найден",
+    "missing_customer_email": "E-mail клиента не найден",
+    "extension_not_allowed_or_already_extended": "Продление недоступно или уже выполнено",
+    "extension_deadline_not_confirmed": "Новая дата продления не подтверждена",
+}
 
 
 def widget_catalog() -> dict[str, Any]:
@@ -458,7 +464,7 @@ def _finalize_row(row: Mapping[str, Any]) -> dict[str, str]:
         "outcome": _optional_text(row.get("outcome")) or "processed",
         "channel_label": _channel_label(channel),
         "new_deadline": _optional_text(row.get("new_deadline")) or "-",
-        "reason": "; ".join(row.get("reasons") or []) or "-",
+        "reason": "; ".join(_reason_label(reason) for reason in row.get("reasons") or []) or "-",
     }
 
 
@@ -487,3 +493,14 @@ def _channel_label(channel: str | None) -> str:
     if channel == "email":
         return "E-mail"
     return "-"
+
+
+def _reason_label(reason: Any) -> str:
+    text = _optional_text(reason)
+    if text is None:
+        return "-"
+    if text in _REASON_LABELS:
+        return _REASON_LABELS[text]
+    if text.startswith("notification_failed:"):
+        return f"Ошибка отправки уведомления: {text.removeprefix('notification_failed:')}"
+    return text
