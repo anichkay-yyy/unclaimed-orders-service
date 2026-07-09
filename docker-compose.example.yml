@@ -1,0 +1,16 @@
+services:
+  unclaimed-orders-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: unclaimed-orders-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - unclaimed-orders-data:/data
+
+volumes:
+  unclaimed-orders-data:

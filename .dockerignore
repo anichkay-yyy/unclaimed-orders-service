@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+!.env.sops
+*.key
+.DS_Store
+.git/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+data/
+logs/
+*.log
