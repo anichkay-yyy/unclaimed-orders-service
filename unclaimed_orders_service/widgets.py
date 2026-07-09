@@ -441,9 +441,7 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
 def _show_widget_row(row: Mapping[str, Any]) -> bool:
     if row.get("result") == "error":
         return True
-    if row.get("outcome") in {"extended", "notified"}:
-        return True
-    return "extension_not_allowed_or_already_extended" in (row.get("reasons") or [])
+    return row.get("outcome") in {"extended", "notified"}
 
 
 def _apply_action(row: dict[str, Any], action: str | None) -> None:

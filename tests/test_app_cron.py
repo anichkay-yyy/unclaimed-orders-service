@@ -189,7 +189,7 @@ def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyP
     ]
 
 
-def test_widget_state_hides_routine_skips(monkeypatch: MonkeyPatch) -> None:
+def test_widget_state_hides_routine_and_unavailable_skips(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
     _reset_cron_state()
     app_module._cron_state.last_status = "succeeded"
@@ -232,10 +232,9 @@ def test_widget_state_hides_routine_skips(monkeypatch: MonkeyPatch) -> None:
 
     payload = response.json()
     assert response.status_code == 200
-    assert payload["totals"] == {"checked": 3, "orders": 2, "success": 2, "errors": 0}
-    assert [row["order_id"] for row in payload["rows"]] == ["not-allowed", "notified"]
-    assert payload["rows"][0]["reason"] == "Продление недоступно или уже выполнено"
-    assert payload["rows"][1]["outcome"] == "notified"
+    assert payload["totals"] == {"checked": 3, "orders": 1, "success": 1, "errors": 0}
+    assert [row["order_id"] for row in payload["rows"]] == ["notified"]
+    assert payload["rows"][0]["outcome"] == "notified"
 
 
 async def test_manual_run_updates_widget_state(monkeypatch: MonkeyPatch) -> None:
