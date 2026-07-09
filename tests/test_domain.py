@@ -142,6 +142,46 @@ async def test_creates_operator_task_when_extension_fails() -> None:
     assert tasks.reasons == ["carrier_error"]
 
 
+async def test_skips_notification_when_extension_is_not_allowed() -> None:
+    today = date(2026, 7, 4)
+    blocked_order = PickupOrder(
+        external_id="m-1",
+        recipient_name="Ирина",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="client@example.com",
+        already_extended=True,
+    )
+    carrier = FakeCarrier(
+        orders=[blocked_order],
+        result=ExtensionResult(ok=True, new_deadline=today + timedelta(days=6)),
+    )
+    notifier = FakeNotifier()
+
+    summary = await UnclaimedOrdersService(carrier, notifier, FakeTasks()).run_daily(today=today)
+
+    assert summary.decisions[0].action is DecisionAction.SKIPPED
+    assert summary.decisions[0].reason == "extension_not_allowed_or_already_extended"
+    assert carrier.extended == []
+    assert notifier.messages == []
+
+
+async def test_skips_notification_when_extension_deadline_is_not_confirmed() -> None:
+    today = date(2026, 7, 4)
+    carrier = FakeCarrier(
+        orders=[order(today + timedelta(days=1))],
+        result=ExtensionResult(ok=True, new_deadline=None),
+    )
+    notifier = FakeNotifier()
+
+    summary = await UnclaimedOrdersService(carrier, notifier, FakeTasks()).run_daily(today=today)
+
+    assert summary.decisions[0].action is DecisionAction.SKIPPED
+    assert summary.decisions[0].reason == "extension_deadline_not_confirmed"
+    assert carrier.extended == ["m-1"]
+    assert notifier.messages == []
+
+
 async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:
     today = date(2026, 7, 4)
     carrier = FakeCarrier(

@@ -142,6 +142,15 @@ class UnclaimedOrdersService:
             if days_left < 0:
                 decisions.append(await self._operator_task(order, "deadline_already_passed"))
                 continue
+            if order.already_extended:
+                decisions.append(
+                    RunDecision(
+                        order.external_id,
+                        DecisionAction.SKIPPED,
+                        "extension_not_allowed_or_already_extended",
+                    )
+                )
+                continue
 
             extension = await self._extend(order)
             if not extension.ok:
@@ -149,15 +158,23 @@ class UnclaimedOrdersService:
                     await self._operator_task(order, extension.error or "extension_failed")
                 )
                 continue
-            if extension.new_deadline is not None:
+            if extension.new_deadline is None:
                 decisions.append(
                     RunDecision(
-                        order_id=order.external_id,
-                        action=DecisionAction.EXTENDED,
-                        reason="extended_before_notification",
-                        new_deadline=extension.new_deadline,
+                        order.external_id,
+                        DecisionAction.SKIPPED,
+                        "extension_deadline_not_confirmed",
                     )
                 )
+                continue
+            decisions.append(
+                RunDecision(
+                    order_id=order.external_id,
+                    action=DecisionAction.EXTENDED,
+                    reason="extended_before_notification",
+                    new_deadline=extension.new_deadline,
+                )
+            )
 
             notification = await self._notifier.notify(
                 order,
@@ -177,8 +194,6 @@ class UnclaimedOrdersService:
         return RunSummary(checked=len(orders), decisions=tuple(decisions))
 
     async def _extend(self, order: PickupOrder) -> ExtensionResult:
-        if order.already_extended:
-            return ExtensionResult(ok=True)
         return await self._carrier.extend_storage(order, days=self._policy.extension_days)
 
     async def _operator_task(self, order: PickupOrder, reason: str) -> RunDecision:
