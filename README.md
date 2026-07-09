@@ -38,7 +38,7 @@ Customer message after a successful extension:
 ## Run
 
 ```bash
-uv run --project tools/unclaimed_orders_service uvicorn unclaimed_orders_service.app:app --reload --port 8090
+uv run --project tools/unclaimed_orders_service uvicorn unclaimed_orders_service.app:app --reload --port 8000
 ```
 
 The service starts an embedded daily scheduler by default:
@@ -52,7 +52,7 @@ UNCLAIMED_ORDERS_CRON_TZ=Europe/Moscow
 Check the scheduler state:
 
 ```bash
-curl http://127.0.0.1:8090/runs/cron
+curl http://127.0.0.1:8000/runs/cron
 ```
 
 Run this service with one `uvicorn` worker when the embedded scheduler is
@@ -73,7 +73,7 @@ repo_url: https://github.com/anichkay-yyy/unclaimed-orders-service.git
 ref: main
 dockerfile: Dockerfile
 env_file_path: .env.sops
-port: 8090
+port: 8000
 health: /health
 ```
 
@@ -82,13 +82,13 @@ Decrypt `.env.sops` with the same age private key used for `erp-proxy-service`.
 Then:
 
 ```bash
-curl -X POST http://127.0.0.1:8090/runs/daily
+curl -X POST http://127.0.0.1:8000/runs/daily
 ```
 
 Fetch orders only:
 
 ```bash
-curl http://127.0.0.1:8090/orders/waiting
+curl http://127.0.0.1:8000/orders/waiting
 uv run --project tools/unclaimed_orders_service python -m unclaimed_orders_service.list_orders
 ```
 
