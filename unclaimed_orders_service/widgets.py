@@ -435,7 +435,15 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
             row["new_deadline"] = _date_text(decision.get("new_deadline"))
         _apply_action(row, action)
 
-    return [_finalize_row(row) for row in grouped.values()]
+    return [_finalize_row(row) for row in grouped.values() if _show_widget_row(row)]
+
+
+def _show_widget_row(row: Mapping[str, Any]) -> bool:
+    if row.get("result") == "error":
+        return True
+    if row.get("outcome") in {"extended", "notified"}:
+        return True
+    return "extension_not_allowed_or_already_extended" in (row.get("reasons") or [])
 
 
 def _apply_action(row: dict[str, Any], action: str | None) -> None:
