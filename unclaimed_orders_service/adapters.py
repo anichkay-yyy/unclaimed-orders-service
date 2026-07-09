@@ -445,6 +445,7 @@ class BitrixOpenLineChat:
 
     chat_id: str
     connector_id: str | None = None
+    connector_title: str | None = None
     active: bool = False
 
 
@@ -455,6 +456,7 @@ class BitrixContactNotificationRoute:
     channel: str
     destination: str | None = None
     connector_id: str | None = None
+    connector_title: str | None = None
     active: bool = False
     error: str | None = None
 
@@ -467,7 +469,15 @@ class BitrixContactClient:
     page_size: int = 50
     max_pages: int = 20
     excluded_openline_connectors: tuple[str, ...] = ("integracio_chat", "livechat")
-    allow_openline_notifications: bool = False
+    excluded_openline_title_terms: tuple[str, ...] = (
+        "онлайн-чат",
+        "онлайн чат",
+        "online chat",
+        "live chat",
+        "web chat",
+        "integracio",
+    )
+    allow_openline_notifications: bool = True
 
     async def find_contact_by_email(self, email: str) -> BitrixContactLookupResult:
         """Find the first Bitrix contact matching an email address."""
@@ -578,6 +588,8 @@ class BitrixContactClient:
         if route.channel == "openline" and route.destination:
             openline_result = await self._send_openline_message(route.destination, message)
             if openline_result is not None:
+                if not route.active:
+                    await self._finish_openline_dialog(route.destination)
                 return openline_result
 
         if fallback_email:
@@ -632,6 +644,11 @@ class BitrixContactClient:
                     connector_id=_optional_text(
                         row.get("CONNECTOR_ID") or row.get("connectorId") or row.get("connector_id")
                     ),
+                    connector_title=_optional_text(
+                        row.get("CONNECTOR_TITLE")
+                        or row.get("connectorTitle")
+                        or row.get("connector_title")
+                    ),
                     active=active_only,
                 )
             )
@@ -651,6 +668,25 @@ class BitrixContactClient:
             )
         logger.warning("Bitrix Open Line send failed for chat %s: %s", chat_id, response)
         return None
+
+    async def _finish_openline_dialog(self, chat_id: str) -> bool:
+        methods = (
+            ("imopenlines.operator.finish", {"CHAT_ID": _int_or_none(chat_id) or chat_id}),
+            ("imopenlines.operator.another.finish", {"CHAT_ID": _int_or_none(chat_id) or chat_id}),
+            (
+                "imopenlines.bot.session.finish",
+                {"CHAT_ID": _int_or_none(chat_id) or chat_id, "CLIENT_ID": ""},
+            ),
+        )
+        for method, payload in methods:
+            response = await self._post_bitrix(
+                f"{self.webhook_base_url.rstrip('/')}/{method}.json",
+                payload,
+            )
+            if response.get("result"):
+                return True
+        logger.warning("Bitrix Open Line finish failed for chat %s", chat_id)
+        return False
 
     async def _send_contact_email(
         self,
@@ -765,17 +801,25 @@ class BitrixContactClient:
         self,
         chats: list[BitrixOpenLineChat],
     ) -> BitrixContactNotificationRoute | None:
-        excluded_connectors = set(self.excluded_openline_connectors)
         for chat in chats:
-            if chat.connector_id in excluded_connectors:
+            if self._is_excluded_openline_chat(chat):
                 continue
             return BitrixContactNotificationRoute(
                 channel="openline",
                 destination=chat.chat_id,
                 connector_id=chat.connector_id,
+                connector_title=chat.connector_title,
                 active=chat.active,
             )
         return None
+
+    def _is_excluded_openline_chat(self, chat: BitrixOpenLineChat) -> bool:
+        connector_id = (chat.connector_id or "").strip().casefold()
+        excluded_connectors = {item.casefold() for item in self.excluded_openline_connectors}
+        if connector_id in excluded_connectors:
+            return True
+        title = (chat.connector_title or "").strip().casefold()
+        return any(term.casefold() in title for term in self.excluded_openline_title_terms)
 
 
 @dataclass(frozen=True, slots=True)

@@ -607,18 +607,23 @@ async def test_bitrix_contact_client_prefers_non_web_openline(
             return FakeResponse(
                 {
                     "result": [
-                        {"CHAT_ID": "web-1", "CONNECTOR_ID": "integracio_chat"},
-                        {"CHAT_ID": "tg-1", "CONNECTOR_ID": "telegrambot"},
+                        {
+                            "CHAT_ID": "web-1",
+                            "CONNECTOR_ID": "integracio_chat",
+                            "CONNECTOR_TITLE": "Онлайн-чат",
+                        },
+                        {
+                            "CHAT_ID": "tg-1",
+                            "CONNECTOR_ID": "telegrambot",
+                            "CONNECTOR_TITLE": "Telegram",
+                        },
                     ]
                 }
             )
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
 
-    client = BitrixContactClient(
-        webhook_base_url="https://bitrix.test/rest/1/token",
-        allow_openline_notifications=True,
-    )
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
     route = await client.resolve_contact_notification_route(
         "123",
         fallback_email="client@example.com",
@@ -627,6 +632,7 @@ async def test_bitrix_contact_client_prefers_non_web_openline(
     assert route.channel == "openline"
     assert route.destination == "tg-1"
     assert route.connector_id == "telegrambot"
+    assert route.connector_title == "Telegram"
     assert route.active is True
     assert requests == [
         {
@@ -640,7 +646,7 @@ async def test_bitrix_contact_client_prefers_non_web_openline(
     ]
 
 
-async def test_bitrix_contact_client_defaults_to_email_without_openline_lookup(
+async def test_bitrix_contact_client_can_disable_openline_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[dict[str, object]] = []
@@ -661,7 +667,10 @@ async def test_bitrix_contact_client_defaults_to_email_without_openline_lookup(
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
 
-    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
+    client = BitrixContactClient(
+        webhook_base_url="https://bitrix.test/rest/1/token",
+        allow_openline_notifications=False,
+    )
     route = await client.resolve_contact_notification_route(
         "123",
         fallback_email="client@example.com",
@@ -691,14 +700,21 @@ async def test_bitrix_contact_client_falls_back_to_email_without_allowed_openlin
             payload = kwargs.get("json")
             assert isinstance(payload, dict)
             active_only_values.append(str(payload["ACTIVE_ONLY"]))
-            return FakeResponse({"result": [{"CHAT_ID": "web-1", "CONNECTOR_ID": "livechat"}]})
+            return FakeResponse(
+                {
+                    "result": [
+                        {
+                            "CHAT_ID": "web-1",
+                            "CONNECTOR_ID": "custom",
+                            "CONNECTOR_TITLE": "Онлайн-чат",
+                        }
+                    ]
+                }
+            )
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
 
-    client = BitrixContactClient(
-        webhook_base_url="https://bitrix.test/rest/1/token",
-        allow_openline_notifications=True,
-    )
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
     route = await client.resolve_contact_notification_route(
         "123",
         fallback_email="client@example.com",
@@ -736,10 +752,7 @@ async def test_bitrix_contact_client_notifies_openline_first(
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
 
-    client = BitrixContactClient(
-        webhook_base_url="https://bitrix.test/rest/1/token",
-        allow_openline_notifications=True,
-    )
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
     result = await client.notify_contact(
         "123",
         fallback_email="client@example.com",
@@ -755,7 +768,58 @@ async def test_bitrix_contact_client_notifies_openline_first(
     ]
 
 
-async def test_bitrix_contact_client_notifies_email_by_default(
+async def test_bitrix_contact_client_closes_opened_inactive_openline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeHttpClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> FakeResponse:
+            calls.append(url.rsplit("/", maxsplit=1)[-1])
+            payload = kwargs.get("json")
+            if url.endswith("/imopenlines.crm.chat.get.json"):
+                assert isinstance(payload, dict)
+                if payload["ACTIVE_ONLY"] == "Y":
+                    return FakeResponse({"result": []})
+                return FakeResponse(
+                    {"result": [{"CHAT_ID": "tg-1", "CONNECTOR_ID": "telegrambot"}]}
+                )
+            if url.endswith("/imopenlines.bot.session.message.send.json"):
+                return FakeResponse({"result": True})
+            if url.endswith("/imopenlines.operator.finish.json"):
+                return FakeResponse({"result": True})
+            raise AssertionError(f"unexpected Bitrix method: {url}")
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
+    result = await client.notify_contact(
+        "123",
+        fallback_email="client@example.com",
+        subject="Subject",
+        message="Message",
+    )
+
+    assert result.channel is NotificationChannel.BITRIX
+    assert result.destination == "openline:tg-1"
+    assert calls == [
+        "imopenlines.crm.chat.get.json",
+        "imopenlines.crm.chat.get.json",
+        "imopenlines.bot.session.message.send.json",
+        "imopenlines.operator.finish.json",
+    ]
+
+
+async def test_bitrix_contact_client_notifies_email_for_online_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     activity_payloads: list[dict[str, object]] = []
@@ -774,6 +838,18 @@ async def test_bitrix_contact_client_notifies_email_by_default(
         async def post(self, url: str, **kwargs: object) -> FakeResponse:
             calls.append(url.rsplit("/", maxsplit=1)[-1])
             payload = kwargs.get("json")
+            if url.endswith("/imopenlines.crm.chat.get.json"):
+                return FakeResponse(
+                    {
+                        "result": [
+                            {
+                                "CHAT_ID": "web-1",
+                                "CONNECTOR_ID": "livechat",
+                                "CONNECTOR_TITLE": "Онлайн-чат",
+                            }
+                        ]
+                    }
+                )
             if url.endswith("/crm.contact.get.json"):
                 return FakeResponse(
                     {
@@ -816,7 +892,6 @@ async def test_bitrix_contact_client_notifies_email_by_default(
     assert result.channel is NotificationChannel.EMAIL
     assert result.destination == "client@example.com"
     assert result.message_id == "3165"
-    assert "imopenlines.crm.chat.get.json" not in calls
     assert "imopenlines.bot.session.message.send.json" not in calls
     fields = activity_payloads[0]["fields"]
     assert isinstance(fields, dict)
