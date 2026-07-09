@@ -12,6 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from unclaimed_orders_service.adapters import (
@@ -26,6 +27,11 @@ from unclaimed_orders_service.erp import ErpSourceLookup
 from unclaimed_orders_service.list_due_emails import (
     _build_bitrix_contact_client,
     _build_fivepost_client,
+)
+from unclaimed_orders_service.widgets import (
+    build_widget_state,
+    render_widget_html,
+    widget_catalog,
 )
 
 _log = logging.getLogger(__name__)
@@ -113,6 +119,36 @@ class WaitingOrdersRequest(BaseModel):
 async def health() -> dict[str, Any]:
     """Liveness check."""
     return {"ok": True, "time": datetime.now(UTC).isoformat()}
+
+
+@app.get("/widgets/widgets.json")
+async def widgets_catalog() -> dict[str, Any]:
+    """Expose service widgets for Mary discovery."""
+    return widget_catalog()
+
+
+@app.get("/widgets/unclaimed-orders", response_class=HTMLResponse)
+async def unclaimed_orders_widget() -> HTMLResponse:
+    """Render the embeddable unclaimed orders monitor."""
+    return HTMLResponse(render_widget_html())
+
+
+@app.get("/widgets/unclaimed-orders/state")
+async def unclaimed_orders_widget_state() -> dict[str, Any]:
+    """Return normalized service state for the widget UI."""
+    config = _load_cron_config()
+    return build_widget_state(
+        enabled=config.enabled,
+        time_label=config.time_label,
+        timezone_name=config.timezone_name,
+        next_run_at=_isoformat_or_none(_cron_state.next_run_at),
+        running=_cron_state.running,
+        last_run_started_at=_isoformat_or_none(_cron_state.last_run_started_at),
+        last_run_finished_at=_isoformat_or_none(_cron_state.last_run_finished_at),
+        last_status=_cron_state.last_status,
+        last_error=_cron_state.last_error,
+        last_summary=_cron_state.last_summary,
+    )
 
 
 @app.post("/runs/daily")
