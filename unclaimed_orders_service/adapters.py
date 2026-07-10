@@ -946,13 +946,19 @@ class ErpEmailCarrierClient:
 
     carrier: Any
     erp: Any
+    notify_window_days: int = 2
 
     async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
-        """Return carrier orders enriched with ERP e-mail where available."""
+        """Return orders, enriching ERP data only when the order can be acted on."""
         list_orders = self.carrier.list_waiting_pickup_orders
         orders = await list_orders(today=today)
         enriched: list[PickupOrder] = []
         for order in orders:
+            days_left = (order.pickup_deadline - today).days
+            if days_left > self.notify_window_days or days_left < 0 or order.already_extended:
+                enriched.append(order)
+                continue
+
             lookup_number = str(order.metadata.get("lookup_number") or order.external_id)
             record = await self.erp.find_order(lookup_number)
             metadata = {

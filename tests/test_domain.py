@@ -258,3 +258,44 @@ async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:
     assert erp.lookups == ["m-1"]
     assert orders[0].email == "erp@example.com"
     assert orders[0].metadata["erp_order_number"] == "420861"
+
+
+async def test_erp_email_carrier_does_not_enrich_outside_window_orders() -> None:
+    today = date(2026, 7, 4)
+    carrier = FakeCarrier(
+        orders=[order(today + timedelta(days=4))],
+        result=ExtensionResult(ok=True),
+    )
+    erp = FakeErp(FakeErpRecord(found=True, email="erp@example.com"))
+
+    orders = await ErpEmailCarrierClient(carrier=carrier, erp=erp).list_waiting_pickup_orders(
+        today=today
+    )
+
+    assert erp.lookups == []
+    assert orders[0].email == "client@example.com"
+    assert "erp_order_number" not in orders[0].metadata
+
+
+async def test_erp_email_carrier_does_not_enrich_already_extended_orders() -> None:
+    today = date(2026, 7, 4)
+    blocked_order = PickupOrder(
+        external_id="m-1",
+        recipient_name="Ирина",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="client@example.com",
+        already_extended=True,
+    )
+    carrier = FakeCarrier(
+        orders=[blocked_order],
+        result=ExtensionResult(ok=True),
+    )
+    erp = FakeErp(FakeErpRecord(found=True, email="erp@example.com"))
+
+    orders = await ErpEmailCarrierClient(carrier=carrier, erp=erp).list_waiting_pickup_orders(
+        today=today
+    )
+
+    assert erp.lookups == []
+    assert orders[0].email == "client@example.com"
