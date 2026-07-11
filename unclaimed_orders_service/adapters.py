@@ -591,7 +591,11 @@ class BitrixContactClient:
             if openline_result is not None:
                 if not route.active:
                     await self._finish_openline_dialog(route.destination)
-                return openline_result
+                return replace(
+                    openline_result,
+                    contact_id=contact_id,
+                    contact_url=self._contact_url(contact_id),
+                )
 
         if fallback_email:
             return await self._send_contact_email(
@@ -745,7 +749,15 @@ class BitrixContactClient:
             channel=NotificationChannel.EMAIL,
             destination=email,
             message_id=activity_id,
+            contact_id=contact_id,
+            contact_url=self._contact_url(contact_id),
         )
+
+    def _contact_url(self, contact_id: str) -> str | None:
+        portal = _bitrix_portal_url(self.webhook_base_url)
+        if portal is None:
+            return None
+        return f"{portal}/crm/contact/details/{contact_id}/"
 
     async def _get_contact(self, contact_id: int) -> dict:
         response = await self._post_bitrix(
@@ -1156,6 +1168,13 @@ def _first_contact_email(contact: dict) -> str | None:
             email = _optional_text(value.get("VALUE"))
             if email:
                 return email
+    return None
+
+
+def _bitrix_portal_url(webhook_base_url: str) -> str | None:
+    portal, marker, _rest = webhook_base_url.rstrip("/").partition("/rest/")
+    if marker and portal:
+        return portal
     return None
 
 

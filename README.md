@@ -47,6 +47,7 @@ The service starts an embedded daily scheduler by default:
 UNCLAIMED_ORDERS_CRON_ENABLED=1
 UNCLAIMED_ORDERS_CRON_TIME=09:00
 UNCLAIMED_ORDERS_CRON_TZ=Europe/Moscow
+UNCLAIMED_ORDERS_WIDGET_STATE_PATH=/data/unclaimed_orders_widget_state.json
 ```
 
 Check the scheduler state:
@@ -78,6 +79,8 @@ health: /health
 ```
 
 Decrypt `.env.sops` with the same age private key used for `erp-proxy-service`.
+The widget stores the last run DTO at `UNCLAIMED_ORDERS_WIDGET_STATE_PATH` so
+visible rows survive container restarts/redeploys.
 
 Then:
 

@@ -264,14 +264,15 @@ def render_widget_html() -> str:
         <thead>
           <tr>
             <th style="width: 22%">Заказ</th>
-            <th style="width: 16%">Результат</th>
-            <th style="width: 16%">Канал</th>
-            <th style="width: 18%">Новый срок</th>
+            <th style="width: 14%">Контакт</th>
+            <th style="width: 14%">Результат</th>
+            <th style="width: 14%">Канал</th>
+            <th style="width: 14%">Новый срок</th>
             <th>Причина</th>
           </tr>
         </thead>
         <tbody id="rows">
-          <tr><td colspan="5"><div class="empty">Загрузка...</div></td></tr>
+          <tr><td colspan="6"><div class="empty">Загрузка...</div></td></tr>
         </tbody>
       </table>
     </section>
@@ -315,6 +316,12 @@ def render_widget_html() -> str:
       return '<span class="badge ok">Успешно</span>';
     }
 
+    function contactLink(row) {
+      if (!row.contact_url) return escapeHtml(row.contact_label || "-");
+      return `<a href="${escapeHtml(row.contact_url)}" target="_blank" rel="noreferrer">` +
+        `${escapeHtml(row.contact_label || "Контакт")}</a>`;
+    }
+
     function filteredRows() {
       const payload = state.raw || {};
       const lastRun = payload.last_run || {};
@@ -331,7 +338,7 @@ def render_widget_html() -> str:
       const rows = filteredRows();
       if (rows.length === 0) {
         rowsEl.innerHTML = [
-          '<tr><td colspan="5">',
+          '<tr><td colspan="6">',
           '<div class="empty">Нет строк для выбранных фильтров</div>',
           '</td></tr>'
         ].join("");
@@ -343,6 +350,7 @@ def render_widget_html() -> str:
             <div class="order">${escapeHtml(row.order_id)}</div>
             <div class="muted">${escapeHtml(row.carrier)}</div>
           </td>
+          <td>${contactLink(row)}</td>
           <td>${resultBadge(row)}<div class="muted">${escapeHtml(row.outcome)}</div></td>
           <td>${escapeHtml(row.channel_label)}</td>
           <td>${escapeHtml(row.new_deadline)}</td>
@@ -379,7 +387,7 @@ def render_widget_html() -> str:
         render();
       } catch (error) {
         rowsEl.innerHTML = [
-          '<tr><td colspan="5">',
+          '<tr><td colspan="6">',
           `<div class="empty">Не удалось загрузить состояние: `,
           `${escapeHtml(error.message)}</div>`,
           '</td></tr>'
@@ -422,6 +430,9 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
                 "outcome": "processed",
                 "channel": None,
                 "new_deadline": None,
+                "contact_id": None,
+                "contact_url": None,
+                "message_id": None,
                 "reasons": [],
             },
         )
@@ -433,6 +444,12 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
             row["channel"] = _optional_text(_enum_value(decision.get("channel")))
         if decision.get("new_deadline"):
             row["new_deadline"] = _date_text(decision.get("new_deadline"))
+        if _optional_text(decision.get("contact_id")):
+            row["contact_id"] = _optional_text(decision.get("contact_id"))
+        if _optional_text(decision.get("contact_url")):
+            row["contact_url"] = _optional_text(decision.get("contact_url"))
+        if _optional_text(decision.get("message_id")):
+            row["message_id"] = _optional_text(decision.get("message_id"))
         _apply_action(row, action)
 
     return [_finalize_row(row) for row in grouped.values() if _show_widget_row(row)]
@@ -468,6 +485,10 @@ def _finalize_row(row: Mapping[str, Any]) -> dict[str, str]:
         "carrier": _optional_text(row.get("carrier")) or "5post",
         "result": _optional_text(row.get("result")) or "success",
         "outcome": _optional_text(row.get("outcome")) or "processed",
+        "contact_id": _optional_text(row.get("contact_id")) or "",
+        "contact_url": _optional_text(row.get("contact_url")) or "",
+        "contact_label": _contact_label(row),
+        "message_id": _optional_text(row.get("message_id")) or "",
         "channel_label": _channel_label(channel),
         "new_deadline": _optional_text(row.get("new_deadline")) or "-",
         "reason": "; ".join(_reason_label(reason) for reason in row.get("reasons") or []) or "-",
@@ -498,6 +519,15 @@ def _channel_label(channel: str | None) -> str:
         return "Bitrix IM/OpenLine"
     if channel == "email":
         return "E-mail"
+    return "-"
+
+
+def _contact_label(row: Mapping[str, Any]) -> str:
+    contact_id = _optional_text(row.get("contact_id"))
+    if contact_id:
+        return f"Контакт {contact_id}"
+    if _optional_text(row.get("contact_url")):
+        return "Контакт"
     return "-"
 
 

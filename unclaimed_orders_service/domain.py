@@ -57,6 +57,8 @@ class NotificationResult:
     channel: NotificationChannel
     destination: str
     message_id: str | None = None
+    contact_id: str | None = None
+    contact_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +70,9 @@ class RunDecision:
     reason: str
     channel: NotificationChannel | None = None
     new_deadline: date | None = None
+    message_id: str | None = None
+    contact_id: str | None = None
+    contact_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +199,9 @@ class UnclaimedOrdersService:
                     reason="client_notified",
                     channel=notification.channel,
                     new_deadline=extension.new_deadline,
+                    message_id=notification.message_id,
+                    contact_id=notification.contact_id,
+                    contact_url=notification.contact_url,
                 )
             )
 

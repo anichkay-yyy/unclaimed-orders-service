@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
+from enum import Enum
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -38,8 +41,10 @@ _log = logging.getLogger(__name__)
 _CRON_ENABLED_ENV = "UNCLAIMED_ORDERS_CRON_ENABLED"
 _CRON_TIME_ENV = "UNCLAIMED_ORDERS_CRON_TIME"
 _CRON_TZ_ENV = "UNCLAIMED_ORDERS_CRON_TZ"
+_WIDGET_STATE_PATH_ENV = "UNCLAIMED_ORDERS_WIDGET_STATE_PATH"
 _DEFAULT_CRON_TIME = "09:00"
 _DEFAULT_CRON_TZ = "Europe/Moscow"
+_DEFAULT_WIDGET_STATE_PATH = "/data/unclaimed_orders_widget_state.json"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -83,6 +88,7 @@ async def lifespan(_app: FastAPI) -> Any:
     """Start and stop the embedded daily scheduler."""
     global _cron_task
 
+    _load_persisted_widget_state()
     config = _load_cron_config()
     if config.enabled:
         _cron_task = asyncio.create_task(_daily_cron_loop(config), name="unclaimed-orders-cron")
@@ -207,11 +213,13 @@ async def _run_daily_tracked(run_date: date, *, raise_errors: bool) -> dict[str,
             if raise_errors:
                 raise
             return _cron_state.last_summary
+        else:
+            _cron_state.last_status = "succeeded"
+            return _cron_state.last_summary
         finally:
             _cron_state.running = False
             _cron_state.last_run_finished_at = datetime.now(UTC)
-        _cron_state.last_status = "succeeded"
-        return _cron_state.last_summary
+            _persist_widget_state()
 
 
 async def _run_daily_for_date(run_date: date) -> dict[str, Any]:
@@ -346,3 +354,74 @@ def _isoformat_or_none(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _widget_state_path() -> Path:
+    return Path(os.environ.get(_WIDGET_STATE_PATH_ENV, _DEFAULT_WIDGET_STATE_PATH))
+
+
+def _persist_widget_state() -> None:
+    payload = {
+        "last_run_started_at": _isoformat_or_none(_cron_state.last_run_started_at),
+        "last_run_finished_at": _isoformat_or_none(_cron_state.last_run_finished_at),
+        "last_status": _cron_state.last_status,
+        "last_error": _cron_state.last_error,
+        "last_summary": _jsonable(_cron_state.last_summary),
+    }
+    path = _widget_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        _log.warning("unclaimed_orders_widget_state_persist_failed", extra={"error": str(exc)})
+
+
+def _load_persisted_widget_state() -> None:
+    path = _widget_state_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError) as exc:
+        _log.warning("unclaimed_orders_widget_state_load_failed", extra={"error": str(exc)})
+        return
+    if not isinstance(payload, dict):
+        return
+    _cron_state.last_run_started_at = _parse_datetime(payload.get("last_run_started_at"))
+    _cron_state.last_run_finished_at = _parse_datetime(payload.get("last_run_finished_at"))
+    _cron_state.last_status = _optional_str(payload.get("last_status"))
+    _cron_state.last_error = _optional_str(payload.get("last_error"))
+    last_summary = payload.get("last_summary")
+    _cron_state.last_summary = last_summary if isinstance(last_summary, dict) else None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value

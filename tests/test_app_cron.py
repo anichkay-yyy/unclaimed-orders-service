@@ -16,6 +16,8 @@ from unclaimed_orders_service.domain import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pytest import MonkeyPatch
 
 
@@ -136,6 +138,10 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
             "carrier": "5post",
             "result": "success",
             "outcome": "notified",
+            "contact_id": "",
+            "contact_url": "",
+            "contact_label": "-",
+            "message_id": "",
             "channel_label": "Bitrix IM/OpenLine",
             "new_deadline": "2026-07-14",
             "reason": "extended_before_notification; client_notified",
@@ -182,6 +188,10 @@ def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyP
             "carrier": "5post",
             "result": "error",
             "outcome": "operator_task",
+            "contact_id": "",
+            "contact_url": "",
+            "contact_label": "-",
+            "message_id": "",
             "channel_label": "-",
             "new_deadline": "2026-07-14",
             "reason": "extended_before_notification; Контакт Bitrix не найден",
@@ -237,8 +247,54 @@ def test_widget_state_hides_routine_and_unavailable_skips(monkeypatch: MonkeyPat
     assert payload["rows"][0]["outcome"] == "notified"
 
 
-async def test_manual_run_updates_widget_state(monkeypatch: MonkeyPatch) -> None:
+def test_widget_state_projects_contact_link(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-09",
+        "mode": "fivepost_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.EXTENDED,
+                "reason": "extended_before_notification",
+                "new_deadline": "2026-07-15",
+            },
+            {
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.NOTIFIED,
+                "reason": "client_notified",
+                "channel": NotificationChannel.EMAIL,
+                "new_deadline": "2026-07-15",
+                "message_id": "184231",
+                "contact_id": "14243",
+                "contact_url": "https://bitrix.photo-print.co/crm/contact/details/14243/",
+            },
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["rows"][0]["contact_id"] == "14243"
+    assert payload["rows"][0]["contact_label"] == "Контакт 14243"
+    assert payload["rows"][0]["contact_url"] == "https://bitrix.photo-print.co/crm/contact/details/14243/"
+    assert payload["rows"][0]["message_id"] == "184231"
+
+
+async def test_manual_run_updates_widget_state(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    monkeypatch.setenv("UNCLAIMED_ORDERS_WIDGET_STATE_PATH", str(tmp_path / "widget-state.json"))
     _reset_cron_state()
     service = _FakeDailyService(
         RunSummary(
@@ -265,6 +321,47 @@ async def test_manual_run_updates_widget_state(monkeypatch: MonkeyPatch) -> None
     assert payload["mode"] == "test_mode"
     assert last_status == "succeeded"
     assert last_summary == payload
+
+
+async def test_manual_run_persists_widget_state(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "widget-state.json"
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    monkeypatch.setenv("UNCLAIMED_ORDERS_WIDGET_STATE_PATH", str(state_path))
+    _reset_cron_state()
+    service = _FakeDailyService(
+        RunSummary(
+            checked=1,
+            decisions=(
+                RunDecision(
+                    "413163-fgykh",
+                    DecisionAction.NOTIFIED,
+                    "client_notified",
+                    channel=NotificationChannel.EMAIL,
+                    new_deadline=date(2026, 7, 15),
+                    message_id="184231",
+                    contact_id="14243",
+                    contact_url="https://bitrix.photo-print.co/crm/contact/details/14243/",
+                ),
+            ),
+        )
+    )
+    monkeypatch.setattr(app_module, "_build_daily_service", lambda: (service, "test_mode"))
+
+    try:
+        await app_module._run_daily_tracked(date(2026, 7, 11), raise_errors=True)
+        _reset_cron_state()
+        app_module._load_persisted_widget_state()
+        loaded_summary = app_module._cron_state.last_summary
+    finally:
+        _reset_cron_state()
+
+    assert loaded_summary is not None
+    assert loaded_summary["today"] == "2026-07-11"
+    assert loaded_summary["decisions"][0]["contact_id"] == "14243"
+    assert loaded_summary["decisions"][0]["message_id"] == "184231"
 
 
 class _FakeDailyService:
