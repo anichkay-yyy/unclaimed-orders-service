@@ -23,7 +23,6 @@ USER 65532:65532
 EXPOSE 8000
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()" || exit 1
+HEALTHCHECK NONE
 
 CMD ["uvicorn", "unclaimed_orders_service.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
