@@ -289,6 +289,66 @@ def test_widget_state_projects_contact_link(monkeypatch: MonkeyPatch) -> None:
     assert payload["rows"][0]["message_id"] == "184231"
 
 
+def test_widget_state_keeps_distinct_attempt_rows(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-11",
+        "mode": "fivepost_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "row_key": "413163-fgykh:184128",
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.EXTENDED,
+                "reason": "extended_before_notification",
+                "new_deadline": "2026-07-15",
+            },
+            {
+                "row_key": "413163-fgykh:184128",
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.OPERATOR_TASK,
+                "reason": "notification_failed:ValueError:bitrix_http_500",
+                "new_deadline": "2026-07-15",
+                "message_id": "184128",
+                "contact_id": "14243",
+                "contact_url": "https://bitrix.photo-print.co/crm/contact/details/14243/",
+            },
+            {
+                "row_key": "413163-fgykh:184231",
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.EXTENDED,
+                "reason": "extended_before_notification",
+                "new_deadline": "2026-07-15",
+            },
+            {
+                "row_key": "413163-fgykh:184231",
+                "order_id": "413163-fgykh",
+                "action": DecisionAction.NOTIFIED,
+                "reason": "client_notified",
+                "channel": NotificationChannel.EMAIL,
+                "new_deadline": "2026-07-15",
+                "message_id": "184231",
+                "contact_id": "14243",
+                "contact_url": "https://bitrix.photo-print.co/crm/contact/details/14243/",
+            },
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["totals"] == {"checked": 1, "orders": 2, "success": 1, "errors": 1}
+    assert [row["order_id"] for row in payload["rows"]] == ["413163-fgykh", "413163-fgykh"]
+    assert [row["message_id"] for row in payload["rows"]] == ["184128", "184231"]
+
+
 async def test_manual_run_updates_widget_state(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,

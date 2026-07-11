@@ -352,7 +352,10 @@ def render_widget_html() -> str:
           </td>
           <td>${contactLink(row)}</td>
           <td>${resultBadge(row)}<div class="muted">${escapeHtml(row.outcome)}</div></td>
-          <td>${escapeHtml(row.channel_label)}</td>
+          <td>
+            ${escapeHtml(row.channel_label)}
+            ${row.message_id ? `<div class="muted">#${escapeHtml(row.message_id)}</div>` : ""}
+          </td>
           <td>${escapeHtml(row.new_deadline)}</td>
           <td>${escapeHtml(row.reason)}</td>
         </tr>
@@ -421,8 +424,9 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
         if not isinstance(decision, Mapping):
             continue
         order_id = _optional_text(decision.get("order_id")) or "unknown"
+        group_key = _optional_text(decision.get("row_key")) or order_id
         row = grouped.setdefault(
-            order_id,
+            group_key,
             {
                 "order_id": order_id,
                 "carrier": "5post",

@@ -73,6 +73,7 @@ class RunDecision:
     message_id: str | None = None
     contact_id: str | None = None
     contact_url: str | None = None
+    row_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
