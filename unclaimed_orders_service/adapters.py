@@ -466,6 +466,7 @@ class BitrixContactClient:
     """Bitrix24 contact lookup and notification client."""
 
     webhook_base_url: str
+    email_from: str | None = None
     page_size: int = 50
     max_pages: int = 20
     excluded_openline_connectors: tuple[str, ...] = ("integracio_chat", "livechat")
@@ -707,7 +708,7 @@ class BitrixContactClient:
         if responsible_id is None:
             msg = f"Bitrix contact {contact_id} has no assigned user"
             raise ValueError(msg)
-        sender = await self._email_sender(responsible_id)
+        sender = _optional_text(self.email_from) or await self._email_sender(responsible_id)
 
         now = datetime.now(UTC)
         response = await self._post_bitrix(
@@ -716,7 +717,7 @@ class BitrixContactClient:
                 "fields": {
                     "SUBJECT": subject,
                     "DESCRIPTION": message,
-                    "DESCRIPTION_TYPE": 1,
+                    "DESCRIPTION_TYPE": 3,
                     "COMPLETED": "Y",
                     "DIRECTION": 2,
                     "OWNER_ID": normalized_contact_id,
@@ -793,7 +794,24 @@ class BitrixContactClient:
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
             )
         if response.status_code >= 400:
-            return {"error": f"bitrix_http_{response.status_code}"}
+            payload: dict[str, object] = {
+                "error": f"bitrix_http_{response.status_code}",
+                "status_code": response.status_code,
+            }
+            try:
+                body = response.json()
+            except ValueError:
+                text = _optional_text(response.text[:2000])
+                if text:
+                    payload["body"] = text
+            else:
+                payload["body"] = body
+                if isinstance(body, dict):
+                    if "error" in body:
+                        payload["bitrix_error"] = body["error"]
+                    if "error_description" in body:
+                        payload["error_description"] = body["error_description"]
+            return payload
         body = response.json()
         return body if isinstance(body, dict) else {"error": "bitrix_response_not_object"}
 

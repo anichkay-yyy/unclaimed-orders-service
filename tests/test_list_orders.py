@@ -860,19 +860,6 @@ async def test_bitrix_contact_client_notifies_email_for_online_chat(
                         }
                     }
                 )
-            if url.endswith("/user.get.json"):
-                return FakeResponse(
-                    {
-                        "result": [
-                            {
-                                "ID": "42",
-                                "NAME": "Manager",
-                                "LAST_NAME": "One",
-                                "EMAIL": "manager@example.com",
-                            }
-                        ]
-                    }
-                )
             if url.endswith("/crm.activity.add.json"):
                 assert isinstance(payload, dict)
                 activity_payloads.append(payload)
@@ -881,7 +868,10 @@ async def test_bitrix_contact_client_notifies_email_for_online_chat(
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
 
-    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
+    client = BitrixContactClient(
+        webhook_base_url="https://bitrix.test/rest/1/token",
+        email_from="Support <support@example.com>",
+    )
     result = await client.notify_contact(
         "123",
         fallback_email="client@example.com",
@@ -893,15 +883,58 @@ async def test_bitrix_contact_client_notifies_email_for_online_chat(
     assert result.destination == "client@example.com"
     assert result.message_id == "3165"
     assert "imopenlines.bot.session.message.send.json" not in calls
+    assert "user.get.json" not in calls
     fields = activity_payloads[0]["fields"]
     assert isinstance(fields, dict)
     assert fields["TYPE_ID"] == 4
     assert fields["DIRECTION"] == 2
+    assert fields["DESCRIPTION_TYPE"] == 3
     assert fields["OWNER_TYPE_ID"] == 3
     assert fields["COMMUNICATIONS"] == [
         {"VALUE": "client@example.com", "ENTITY_ID": 123, "ENTITY_TYPE_ID": 3}
     ]
-    assert fields["SETTINGS"] == {"MESSAGE_FROM": "Manager One <manager@example.com>"}
+    assert fields["SETTINGS"] == {"MESSAGE_FROM": "Support <support@example.com>"}
+
+
+async def test_bitrix_contact_client_preserves_http_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHttpClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> object:
+            return FakeBitrixErrorResponse()
+
+    class FakeBitrixErrorResponse:
+        status_code = 500
+        text = '{"error":"INTERNAL_SERVER_ERROR"}'
+
+        def json(self) -> object:
+            return {
+                "error": "INTERNAL_SERVER_ERROR",
+                "error_description": "Email send error. \"From\" is not found",
+            }
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
+
+    response = await client._post_bitrix(
+        "https://bitrix.test/rest/1/token/crm.activity.add.json",
+        {},
+    )
+
+    assert response["error"] == "bitrix_http_500"
+    assert response["status_code"] == 500
+    assert response["bitrix_error"] == "INTERNAL_SERVER_ERROR"
+    assert response["error_description"] == 'Email send error. "From" is not found'
 
 
 async def test_bitrix_contact_notifier_finds_contact_and_notifies_route() -> None:

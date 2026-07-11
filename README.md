@@ -144,6 +144,13 @@ BITRIX_PORTAL_HOST=example.bitrix24.ru
 BITRIX_WEBHOOK_PATH=1/webhook-token
 ```
 
+Set `BITRIX_EMAIL_FROM` to a Bitrix-connected outbound mailbox for e-mail
+fallbacks:
+
+```bash
+BITRIX_EMAIL_FROM="Служба поддержки клиентов Фабрики Фотокниги <support@fabrika-fotoknigi.com>"
+```
+
 The output includes `bitrix_configured`, `bitrix_contact_found`,
 `bitrix_contact_missing`, `bitrix_contact_errors`,
 `notification_openline_routes`, `notification_email_fallback_routes`,

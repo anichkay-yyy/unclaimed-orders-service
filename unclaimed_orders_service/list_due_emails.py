@@ -504,6 +504,7 @@ def _build_bitrix_contact_client() -> BitrixContactClient | None:
     page_size = int(os.environ.get("BITRIX_PAGE_SIZE", os.environ.get("BITRIX24_PAGE_SIZE", "50")))
     return BitrixContactClient(
         webhook_base_url=webhook_url,
+        email_from=os.environ.get("BITRIX_EMAIL_FROM") or os.environ.get("BITRIX24_EMAIL_FROM"),
         page_size=page_size,
         max_pages=max_pages,
     )
