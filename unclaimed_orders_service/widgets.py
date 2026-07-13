@@ -15,6 +15,7 @@ _REASON_LABELS = {
     "missing_customer_email": "E-mail клиента не найден",
     "extension_not_allowed_or_already_extended": "Продление недоступно или уже выполнено",
     "extension_deadline_not_confirmed": "Новая дата продления не подтверждена",
+    "yandex_extension_not_configured": "Продление Яндекс Доставки через API не настроено",
 }
 
 
@@ -24,8 +25,8 @@ def widget_catalog() -> dict[str, Any]:
         "widgets": [
             {
                 "path": WIDGET_PATH,
-                "name": "5Post storage monitor",
-                "description": "Daily 5Post extension and customer notification status.",
+                "name": "Pickup storage monitor",
+                "description": "Daily pickup storage extension and customer notification status.",
             }
         ]
     }
@@ -88,7 +89,7 @@ def render_widget_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>5Post storage monitor</title>
+  <title>Pickup storage monitor</title>
   <style>
     :root {
       color-scheme: light;
@@ -235,7 +236,7 @@ def render_widget_html() -> str:
   <main class="shell">
     <section class="top">
       <div>
-        <div class="title">5Post storage monitor</div>
+        <div class="title">Pickup storage monitor</div>
         <div class="subtitle" data-subtitle>Загрузка...</div>
       </div>
       <div class="toolbar">
@@ -470,7 +471,7 @@ def _summary_rows(
             group_key,
             {
                 "order_id": order_id,
-                "carrier": "5post",
+                "carrier": _optional_text(decision.get("carrier")) or "5post",
                 "result": "success",
                 "outcome": "processed",
                 "channel": None,
@@ -487,6 +488,8 @@ def _summary_rows(
         reason = _optional_text(decision.get("reason"))
         if reason and reason not in row["reasons"]:
             row["reasons"].append(reason)
+        if _optional_text(decision.get("carrier")):
+            row["carrier"] = _optional_text(decision.get("carrier"))
         if _optional_text(decision.get("channel")):
             row["channel"] = _optional_text(_enum_value(decision.get("channel")))
         if decision.get("new_deadline"):

@@ -54,6 +54,33 @@ class DemoCarrierClient:
 
 
 @dataclass(frozen=True, slots=True)
+class CompositeCarrierClient:
+    """Carrier adapter that combines several carrier sources."""
+
+    carriers: tuple[Any, ...]
+
+    async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
+        """Return waiting pickup orders from every configured carrier."""
+        orders: list[PickupOrder] = []
+        for carrier in self.carriers:
+            list_orders = carrier.list_waiting_pickup_orders
+            orders.extend(await list_orders(today=today))
+        return orders
+
+    async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
+        """Delegate extension to the carrier named in order metadata."""
+        carrier_name = _optional_text(order.metadata.get("carrier"))
+        for carrier in self.carriers:
+            if _carrier_name(carrier) == carrier_name:
+                extend = carrier.extend_storage
+                return await extend(order, days=days)
+        return ExtensionResult(
+            ok=False,
+            error=f"carrier_not_configured:{carrier_name or 'unknown'}",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SafeRouteClient:
     """SafeRoute HTTP client for Magnit Post pickup orders."""
 
@@ -1059,6 +1086,16 @@ class DryRunOperatorTasks:
 
 def _dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _carrier_name(carrier: Any) -> str:
+    if isinstance(carrier, FivePostClient):
+        return "fivepost"
+    if isinstance(carrier, YandexDeliveryClient):
+        return "yandex"
+    if isinstance(carrier, SafeRouteClient):
+        return "saferoute"
+    return _optional_text(getattr(carrier, "name", None)) or carrier.__class__.__name__.lower()
 
 
 def _latest_status(row: dict) -> dict:

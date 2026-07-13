@@ -162,6 +162,30 @@ async def test_creates_operator_task_when_extension_fails() -> None:
     assert tasks.reasons == ["carrier_error"]
 
 
+async def test_daily_summary_preserves_carrier_from_order_metadata() -> None:
+    today = date(2026, 7, 4)
+    yandex_order = PickupOrder(
+        external_id="431501FPerp",
+        recipient_name="Ирина",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="client@example.com",
+        metadata={"carrier": "yandex"},
+    )
+    carrier = FakeCarrier(
+        orders=[yandex_order],
+        result=ExtensionResult(ok=False, error="yandex_extension_not_configured"),
+    )
+    tasks = FakeTasks()
+
+    summary = await UnclaimedOrdersService(carrier, FakeNotifier(), tasks).run_daily(today=today)
+
+    assert summary.decisions[0].action is DecisionAction.OPERATOR_TASK
+    assert summary.decisions[0].carrier == "yandex"
+    assert summary.decisions[0].reason == "yandex_extension_not_configured"
+    assert tasks.reasons == ["yandex_extension_not_configured"]
+
+
 async def test_skips_notification_when_extension_is_not_allowed() -> None:
     today = date(2026, 7, 4)
     blocked_order = PickupOrder(

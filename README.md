@@ -24,6 +24,10 @@ Current carrier sources: SafeRoute/Magnit Post, 5Post, and Yandex Delivery.
    or Open Line sending fails.
 10. Create an operator task when extension or notification cannot be completed.
 
+Yandex Delivery is read-enabled through the same carrier abstraction. Its public
+API discovery has not confirmed a storage-extension endpoint, so Yandex orders
+currently stop before notification with `yandex_extension_not_configured`.
+
 Customer message after a successful extension:
 
 ```text
@@ -123,15 +127,15 @@ List emails for currently due carrier orders:
 uv run --project tools/unclaimed_orders_service \
   python -m unclaimed_orders_service.list_due_emails \
   --today 2026-07-06 \
-  --carrier saferoute \
+  --carrier fivepost \
   --include-emails
 ```
 
-Use `--carrier fivepost`, `--carrier yandex`, or `--carrier all` for the other
-carrier-first flows. 5Post reads `/partners-portal/api/v1/orders/query` and
-Yandex reads `/api/b2b/platform/requests/info`; ERP is used only after the
-carrier due-filter to resolve email. The 5Post already-extended flag comes from
-5Post details; ERP is only a fallback for carriers that do not provide it.
+Use `--carrier fivepost` or `--carrier yandex` for the carrier-first flows.
+5Post reads `/partners-portal/api/v1/orders/query` and Yandex reads
+`/api/b2b/platform/requests/info`; ERP is used only after the carrier due-filter
+to resolve email. The 5Post already-extended flag comes from 5Post details; ERP
+is only a fallback for carriers that do not provide it.
 
 Bitrix contact lookup is read-only and optional. Configure either a full webhook
 base URL:
@@ -167,7 +171,9 @@ filter, takes the first two waiting orders per carrier, runs the ERP lookup on
 each, and reports per-order `samples` (lookup number, ERP found, resolved order
 number, email present, already-extended, error).
 
-When `FIVEPOST_LOGIN`, `FIVEPOST_PASSWORD`, and Bitrix webhook env are present,
-the daily service uses live 5Post extension and Bitrix notification adapters.
+When carrier credentials and Bitrix webhook env are present, the daily service
+uses live carrier reads/extensions and Bitrix notification adapters. Configure
+`FIVEPOST_LOGIN`/`FIVEPOST_PASSWORD` for 5Post, and
+`YANDEX_DELIVERY_OAUTH_TOKEN` or `YANDEX_DELIVERY_TOKEN` for Yandex Delivery.
 Operator tasks still use the dry-run adapter. Without the live env, the service
 falls back to demo dry-run mode.

@@ -74,6 +74,7 @@ class RunDecision:
     contact_id: str | None = None
     contact_url: str | None = None
     row_key: str | None = None
+    carrier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +141,15 @@ class UnclaimedOrdersService:
 
         for order in orders:
             days_left = (order.pickup_deadline - today).days
+            carrier = _order_carrier(order)
             if days_left > self._policy.notify_window_days:
                 decisions.append(
-                    RunDecision(order.external_id, DecisionAction.SKIPPED, "outside_window")
+                    RunDecision(
+                        order.external_id,
+                        DecisionAction.SKIPPED,
+                        "outside_window",
+                        carrier=carrier,
+                    )
                 )
                 continue
             if days_left < 0:
@@ -154,6 +161,7 @@ class UnclaimedOrdersService:
                         order.external_id,
                         DecisionAction.SKIPPED,
                         "extension_not_allowed_or_already_extended",
+                        carrier=carrier,
                     )
                 )
                 continue
@@ -170,6 +178,7 @@ class UnclaimedOrdersService:
                         order.external_id,
                         DecisionAction.SKIPPED,
                         "extension_deadline_not_confirmed",
+                        carrier=carrier,
                     )
                 )
                 continue
@@ -179,6 +188,7 @@ class UnclaimedOrdersService:
                     action=DecisionAction.EXTENDED,
                     reason="extended_before_notification",
                     new_deadline=extension.new_deadline,
+                    carrier=carrier,
                 )
             )
 
@@ -203,6 +213,7 @@ class UnclaimedOrdersService:
                     message_id=notification.message_id,
                     contact_id=notification.contact_id,
                     contact_url=notification.contact_url,
+                    carrier=carrier,
                 )
             )
 
@@ -213,7 +224,19 @@ class UnclaimedOrdersService:
 
     async def _operator_task(self, order: PickupOrder, reason: str) -> RunDecision:
         await self._operator_tasks.create_task(order, reason=reason)
-        return RunDecision(order.external_id, DecisionAction.OPERATOR_TASK, reason)
+        return RunDecision(
+            order.external_id,
+            DecisionAction.OPERATOR_TASK,
+            reason,
+            carrier=_order_carrier(order),
+        )
+
+
+def _order_carrier(order: PickupOrder) -> str:
+    carrier = order.metadata.get("carrier")
+    if isinstance(carrier, str) and carrier.strip():
+        return carrier.strip()
+    return "5post"
 
 
 def _notification_failure_reason(exc: Exception) -> str:

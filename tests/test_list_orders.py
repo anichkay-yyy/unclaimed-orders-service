@@ -10,15 +10,36 @@ from unclaimed_orders_service.adapters import (
     BitrixContactClient,
     BitrixContactLookupResult,
     BitrixContactNotifier,
+    CompositeCarrierClient,
     FivePostClient,
     SafeRouteClient,
     YandexDeliveryClient,
 )
-from unclaimed_orders_service.domain import NotificationChannel, NotificationResult, PickupOrder
+from unclaimed_orders_service.domain import (
+    ExtensionResult,
+    NotificationChannel,
+    NotificationResult,
+    PickupOrder,
+)
 from unclaimed_orders_service.list_orders import _list_orders
 
 if TYPE_CHECKING:
     import pytest
+
+
+class RecordingCarrier:
+    def __init__(self, name: str, result: ExtensionResult) -> None:
+        self.name = name
+        self.result = result
+        self.extended: list[str] = []
+
+    async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
+        return []
+
+    async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
+        assert days == 5
+        self.extended.append(order.external_id)
+        return self.result
 
 
 async def test_list_orders_cli_payload_uses_demo_source() -> None:
@@ -30,6 +51,28 @@ async def test_list_orders_cli_payload_uses_demo_source() -> None:
         "MAGNIT-001",
         "MAGNIT-002",
     ]
+
+
+async def test_composite_carrier_dispatches_extension_by_order_metadata() -> None:
+    fivepost = RecordingCarrier("fivepost", ExtensionResult(ok=True, upstream_id="fivepost-1"))
+    yandex = RecordingCarrier(
+        "yandex",
+        ExtensionResult(ok=False, error="yandex_extension_not_configured"),
+    )
+    client = CompositeCarrierClient((fivepost, yandex))
+    order = PickupOrder(
+        external_id="431501FPerp",
+        recipient_name="Ирина",
+        pickup_deadline=date(2026, 7, 15),
+        status="waiting_pickup",
+        metadata={"carrier": "yandex"},
+    )
+
+    result = await client.extend_storage(order, days=5)
+
+    assert result.error == "yandex_extension_not_configured"
+    assert fivepost.extended == []
+    assert yandex.extended == ["431501FPerp"]
 
 
 async def test_saferoute_client_enriches_waiting_magnit_orders(

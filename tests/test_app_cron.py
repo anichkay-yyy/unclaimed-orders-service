@@ -86,8 +86,8 @@ def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatc
         "widgets": [
             {
                 "path": "/widgets/unclaimed-orders",
-                "name": "5Post storage monitor",
-                "description": "Daily 5Post extension and customer notification status.",
+                "name": "Pickup storage monitor",
+                "description": "Daily pickup storage extension and customer notification status.",
             }
         ]
     }
@@ -201,6 +201,37 @@ def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyP
             "reason": "extended_before_notification; Контакт Bitrix не найден",
         }
     ]
+
+
+def test_widget_state_projects_carrier_and_extension_error(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-13",
+        "mode": "fivepost+yandex_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "order_id": "431501FPerp",
+                "carrier": "yandex",
+                "action": DecisionAction.OPERATOR_TASK,
+                "reason": "yandex_extension_not_configured",
+            },
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["rows"][0]["carrier"] == "yandex"
+    assert payload["rows"][0]["result"] == "error"
+    assert payload["rows"][0]["reason"] == "Продление Яндекс Доставки через API не настроено"
 
 
 def test_widget_state_hides_routine_and_unavailable_skips(monkeypatch: MonkeyPatch) -> None:

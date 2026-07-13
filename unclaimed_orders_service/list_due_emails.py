@@ -27,8 +27,8 @@ def main() -> None:
     parser.add_argument("--today", type=date.fromisoformat, default=datetime.now(UTC).date())
     parser.add_argument(
         "--carrier",
-        # Only 5Post is enabled for now; saferoute/yandex temporarily disabled.
-        choices=("fivepost",),
+        # SafeRoute remains disabled until its extension path is revalidated.
+        choices=("fivepost", "yandex"),
         default="fivepost",
     )
     parser.add_argument(
@@ -64,9 +64,8 @@ async def _list_due_emails(
     include_emails: bool = False,
     bypass_due: bool = False,
 ) -> dict[str, Any]:
-    # NOTE: Only 5Post is enabled for now. SafeRoute and Yandex are temporarily
-    # disabled (Yandex deadline is only a heuristic). Re-enable the blocks below
-    # to bring them back.
+    # NOTE: SafeRoute is temporarily disabled until its extension path is
+    # revalidated. Yandex is read-enabled; storage extension is not configured.
     if carrier == "fivepost":
         return await _list_carrier_due_emails(
             today=today,
@@ -76,15 +75,15 @@ async def _list_due_emails(
             include_emails=include_emails,
             bypass_due=bypass_due,
         )
-    # if carrier == "yandex":
-    #     return await _list_carrier_due_emails(
-    #         today=today,
-    #         carrier_name="yandex",
-    #         carrier_client=_build_yandex_client(),
-    #         limit=limit,
-    #         include_emails=include_emails,
-    #         bypass_due=bypass_due,
-    #     )
+    if carrier == "yandex":
+        return await _list_carrier_due_emails(
+            today=today,
+            carrier_name="yandex",
+            carrier_client=_build_yandex_client(),
+            limit=limit,
+            include_emails=include_emails,
+            bypass_due=bypass_due,
+        )
     # if carrier == "all":
     #     saferoute = await _list_saferoute_due_emails(
     #         today=today,
@@ -115,7 +114,7 @@ async def _list_due_emails(
     #     include_emails=include_emails,
     #     bypass_due=bypass_due,
     # )
-    msg = f"carrier {carrier!r} is disabled; only 'fivepost' is enabled for now"
+    msg = f"carrier {carrier!r} is disabled; only 'fivepost' and 'yandex' are enabled for now"
     raise SystemExit(msg)
 
 
@@ -543,9 +542,11 @@ def _build_yandex_client() -> YandexDeliveryClient:
         "YANDEX_DELIVERY_API_BASE_URL",
         "https://b2b-authproxy.taxi.yandex.net",
     )
-    oauth_token = os.environ.get("YANDEX_DELIVERY_OAUTH_TOKEN")
+    oauth_token = os.environ.get("YANDEX_DELIVERY_OAUTH_TOKEN") or os.environ.get(
+        "YANDEX_DELIVERY_TOKEN"
+    )
     if not oauth_token:
-        msg = "YANDEX_DELIVERY_OAUTH_TOKEN is required"
+        msg = "YANDEX_DELIVERY_OAUTH_TOKEN or YANDEX_DELIVERY_TOKEN is required"
         raise SystemExit(msg)
     storage_days = int(os.environ.get("YANDEX_STORAGE_DAYS", "7"))
     lookback_days = int(os.environ.get("YANDEX_LOOKBACK_DAYS", "90"))

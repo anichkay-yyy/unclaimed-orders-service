@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from unclaimed_orders_service.adapters import (
     BitrixContactNotifier,
+    CompositeCarrierClient,
     DemoCarrierClient,
     DryRunNotifier,
     DryRunOperatorTasks,
@@ -30,6 +31,7 @@ from unclaimed_orders_service.erp import ErpSourceLookup
 from unclaimed_orders_service.list_due_emails import (
     _build_bitrix_contact_client,
     _build_fivepost_client,
+    _build_yandex_client,
 )
 from unclaimed_orders_service.widgets import (
     build_widget_state,
@@ -161,7 +163,7 @@ async def unclaimed_orders_widget_state() -> dict[str, Any]:
 
 @app.post("/runs/daily")
 async def run_daily(request: DailyRunRequest | None = None) -> dict[str, Any]:
-    """Run the daily Magnit Post/SafeRoute unclaimed-order check."""
+    """Run the daily unclaimed-order check."""
     run_date = request.today if request and request.today else datetime.now(UTC).date()
     return await _run_daily_tracked(run_date, raise_errors=True)
 
@@ -238,26 +240,34 @@ async def _run_daily_for_date(run_date: date) -> dict[str, Any]:
 async def list_waiting_orders(today: date | None = None) -> dict[str, Any]:
     """Fetch waiting pickup orders only, without side effects."""
     run_date = today or datetime.now(UTC).date()
-    orders = await DemoCarrierClient().list_waiting_pickup_orders(today=run_date)
-    return {"today": run_date.isoformat(), "orders": [asdict(order) for order in orders]}
+    carrier, mode = _build_configured_carrier()
+    if carrier is None:
+        carrier = DemoCarrierClient()
+        mode = "demo"
+    orders = await carrier.list_waiting_pickup_orders(today=run_date)
+    return {
+        "today": run_date.isoformat(),
+        "mode": mode,
+        "orders": [asdict(order) for order in orders],
+    }
 
 
 def _build_daily_service() -> tuple[UnclaimedOrdersService, str]:
-    """Build the live 5Post service when env is configured, otherwise demo."""
-    if os.environ.get("FIVEPOST_LOGIN") and os.environ.get("FIVEPOST_PASSWORD"):
-        bitrix = _build_bitrix_contact_client()
-        if bitrix is not None:
-            return (
-                UnclaimedOrdersService(
-                    carrier=ErpEmailCarrierClient(
-                        carrier=_build_fivepost_client(),
-                        erp=ErpSourceLookup(),
-                    ),
-                    notifier=BitrixContactNotifier(bitrix),
-                    operator_tasks=DryRunOperatorTasks(),
+    """Build the live carrier service when env is configured, otherwise demo."""
+    carrier, carrier_mode = _build_configured_carrier()
+    bitrix = _build_bitrix_contact_client()
+    if carrier is not None and bitrix is not None:
+        return (
+            UnclaimedOrdersService(
+                carrier=ErpEmailCarrierClient(
+                    carrier=carrier,
+                    erp=ErpSourceLookup(),
                 ),
-                "fivepost_live",
-            )
+                notifier=BitrixContactNotifier(bitrix),
+                operator_tasks=DryRunOperatorTasks(),
+            ),
+            f"{carrier_mode}_live",
+        )
     return (
         UnclaimedOrdersService(
             carrier=DemoCarrierClient(),
@@ -265,6 +275,32 @@ def _build_daily_service() -> tuple[UnclaimedOrdersService, str]:
             operator_tasks=DryRunOperatorTasks(),
         ),
         "demo_dry_run",
+    )
+
+
+def _build_configured_carrier() -> tuple[Any | None, str]:
+    carriers: list[Any] = []
+    names: list[str] = []
+    if _fivepost_configured():
+        carriers.append(_build_fivepost_client())
+        names.append("fivepost")
+    if _yandex_configured():
+        carriers.append(_build_yandex_client())
+        names.append("yandex")
+    if not carriers:
+        return None, ""
+    if len(carriers) == 1:
+        return carriers[0], names[0]
+    return CompositeCarrierClient(tuple(carriers)), "+".join(names)
+
+
+def _fivepost_configured() -> bool:
+    return bool(os.environ.get("FIVEPOST_LOGIN") and os.environ.get("FIVEPOST_PASSWORD"))
+
+
+def _yandex_configured() -> bool:
+    return bool(
+        os.environ.get("YANDEX_DELIVERY_OAUTH_TOKEN") or os.environ.get("YANDEX_DELIVERY_TOKEN")
     )
 
 
