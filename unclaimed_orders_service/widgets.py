@@ -43,9 +43,16 @@ def build_widget_state(
     last_status: str | None,
     last_error: str | None,
     last_summary: Mapping[str, Any] | None,
+    run_history: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a stable DTO for the service widget."""
-    rows = _summary_rows(last_summary)
+    rows = _history_rows(run_history)
+    if not rows:
+        rows = _summary_rows(
+            last_summary,
+            run_date=_summary_date(last_summary),
+            processed_at=last_run_finished_at or last_run_started_at,
+        )
     failed = sum(1 for row in rows if row["result"] == "error")
     return {
         "cron": {
@@ -324,9 +331,10 @@ def render_widget_html() -> str:
 
     function filteredRows() {
       const payload = state.raw || {};
-      const lastRun = payload.last_run || {};
       let rows = Array.isArray(payload.rows) ? payload.rows : [];
-      if (dateFilter.value && lastRun.today !== dateFilter.value) rows = [];
+      if (dateFilter.value) {
+        rows = rows.filter((row) => row.run_date === dateFilter.value);
+      }
       if (resultFilter.value === "error") rows = rows.filter((row) => row.result === "error");
       if (resultFilter.value === "success") {
         rows = rows.filter((row) => row.result !== "error");
@@ -348,7 +356,7 @@ def render_widget_html() -> str:
         <tr>
           <td>
             <div class="order">${escapeHtml(row.order_id)}</div>
-            <div class="muted">${escapeHtml(row.carrier)}</div>
+            <div class="muted">${escapeHtml(row.carrier)} · ${escapeHtml(row.run_date)}</div>
           </td>
           <td>${contactLink(row)}</td>
           <td>${resultBadge(row)}<div class="muted">${escapeHtml(row.outcome)}</div></td>
@@ -367,7 +375,6 @@ def render_widget_html() -> str:
       const cron = payload.cron || {};
       const lastRun = payload.last_run || {};
       const totals = payload.totals || {};
-      if (!dateFilter.value && lastRun.today) dateFilter.value = lastRun.today;
       document.querySelector("[data-subtitle]").textContent =
         `Последний запуск: ${formatDateTime(lastRun.finished_at || lastRun.started_at)}` +
         ` · статус: ${text(lastRun.status)}`;
@@ -412,7 +419,41 @@ def render_widget_html() -> str:
 """
 
 
-def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
+def _history_rows(run_history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+    if not isinstance(run_history, Sequence) or isinstance(run_history, (str, bytes)):
+        return []
+
+    rows: list[dict[str, str]] = []
+    for run in run_history:
+        if not isinstance(run, Mapping):
+            continue
+        summary = run.get("summary")
+        if not isinstance(summary, Mapping):
+            continue
+        rows.extend(
+            _summary_rows(
+                summary,
+                run_date=_summary_date(summary),
+                processed_at=_optional_text(run.get("finished_at"))
+                or _optional_text(run.get("started_at")),
+            )
+        )
+    rows.sort(key=lambda row: row.get("processed_at") or row.get("run_date") or "", reverse=True)
+    return rows
+
+
+def _summary_date(summary: Mapping[str, Any] | None) -> str | None:
+    if not summary:
+        return None
+    return _optional_text(summary.get("today"))
+
+
+def _summary_rows(
+    summary: Mapping[str, Any] | None,
+    *,
+    run_date: str | None = None,
+    processed_at: str | None = None,
+) -> list[dict[str, str]]:
     if not summary:
         return []
     decisions = summary.get("decisions")
@@ -437,6 +478,8 @@ def _summary_rows(summary: Mapping[str, Any] | None) -> list[dict[str, str]]:
                 "contact_id": None,
                 "contact_url": None,
                 "message_id": None,
+                "run_date": run_date,
+                "processed_at": processed_at,
                 "reasons": [],
             },
         )
@@ -493,6 +536,8 @@ def _finalize_row(row: Mapping[str, Any]) -> dict[str, str]:
         "contact_url": _optional_text(row.get("contact_url")) or "",
         "contact_label": _contact_label(row),
         "message_id": _optional_text(row.get("message_id")) or "",
+        "run_date": _optional_text(row.get("run_date")) or "",
+        "processed_at": _optional_text(row.get("processed_at")) or "",
         "channel_label": _channel_label(channel),
         "new_deadline": _optional_text(row.get("new_deadline")) or "-",
         "reason": "; ".join(_reason_label(reason) for reason in row.get("reasons") or []) or "-",

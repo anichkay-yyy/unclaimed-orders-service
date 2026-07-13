@@ -142,6 +142,8 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
             "contact_url": "",
             "contact_label": "-",
             "message_id": "",
+            "run_date": "2026-07-09",
+            "processed_at": "2026-07-09T06:01:00+00:00",
             "channel_label": "Bitrix IM/OpenLine",
             "new_deadline": "2026-07-14",
             "reason": "extended_before_notification; client_notified",
@@ -192,6 +194,8 @@ def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyP
             "contact_url": "",
             "contact_label": "-",
             "message_id": "",
+            "run_date": "2026-07-09",
+            "processed_at": "",
             "channel_label": "-",
             "new_deadline": "2026-07-14",
             "reason": "extended_before_notification; Контакт Bitrix не найден",
@@ -349,6 +353,69 @@ def test_widget_state_keeps_distinct_attempt_rows(monkeypatch: MonkeyPatch) -> N
     assert [row["message_id"] for row in payload["rows"]] == ["184128", "184231"]
 
 
+def test_widget_state_projects_history_newest_first(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_run_started_at = datetime(2026, 7, 13, 6, 0, tzinfo=UTC)
+    app_module._cron_state.last_run_finished_at = datetime(2026, 7, 13, 6, 1, tzinfo=UTC)
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-13",
+        "mode": "fivepost_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "order_id": "new-order",
+                "action": DecisionAction.NOTIFIED,
+                "reason": "client_notified",
+                "channel": NotificationChannel.EMAIL,
+                "new_deadline": "2026-07-17",
+            },
+        ],
+    }
+    app_module._cron_state.widget_runs = [
+        {
+            "started_at": "2026-07-12T06:00:00+00:00",
+            "finished_at": "2026-07-12T06:01:00+00:00",
+            "status": "succeeded",
+            "error": None,
+            "summary": {
+                "today": "2026-07-12",
+                "mode": "fivepost_live",
+                "checked": 1,
+                "decisions": [
+                    {
+                        "order_id": "old-order",
+                        "action": DecisionAction.NOTIFIED,
+                        "reason": "client_notified",
+                        "channel": NotificationChannel.EMAIL,
+                        "new_deadline": "2026-07-16",
+                    },
+                ],
+            },
+        },
+        {
+            "started_at": "2026-07-13T06:00:00+00:00",
+            "finished_at": "2026-07-13T06:01:00+00:00",
+            "status": "succeeded",
+            "error": None,
+            "summary": app_module._cron_state.last_summary,
+        },
+    ]
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["totals"] == {"checked": 1, "orders": 2, "success": 2, "errors": 0}
+    assert [row["order_id"] for row in payload["rows"]] == ["new-order", "old-order"]
+    assert [row["run_date"] for row in payload["rows"]] == ["2026-07-13", "2026-07-12"]
+
+
 async def test_manual_run_updates_widget_state(
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
@@ -415,6 +482,7 @@ async def test_manual_run_persists_widget_state(
         _reset_cron_state()
         app_module._load_persisted_widget_state()
         loaded_summary = app_module._cron_state.last_summary
+        loaded_runs = app_module._cron_state.widget_runs
     finally:
         _reset_cron_state()
 
@@ -422,6 +490,7 @@ async def test_manual_run_persists_widget_state(
     assert loaded_summary["today"] == "2026-07-11"
     assert loaded_summary["decisions"][0]["contact_id"] == "14243"
     assert loaded_summary["decisions"][0]["message_id"] == "184231"
+    assert loaded_runs[0]["summary"]["today"] == "2026-07-11"
 
 
 class _FakeDailyService:
@@ -440,3 +509,4 @@ def _reset_cron_state() -> None:
     app_module._cron_state.last_status = None
     app_module._cron_state.last_error = None
     app_module._cron_state.last_summary = None
+    app_module._cron_state.widget_runs = []

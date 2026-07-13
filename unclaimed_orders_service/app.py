@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from enum import Enum
 from pathlib import Path
@@ -76,6 +76,7 @@ class CronState:
     last_status: str | None = None
     last_error: str | None = None
     last_summary: dict[str, Any] | None = None
+    widget_runs: list[dict[str, Any]] = field(default_factory=list)
 
 
 _cron_state = CronState()
@@ -154,6 +155,7 @@ async def unclaimed_orders_widget_state() -> dict[str, Any]:
         last_status=_cron_state.last_status,
         last_error=_cron_state.last_error,
         last_summary=_cron_state.last_summary,
+        run_history=_cron_state.widget_runs,
     )
 
 
@@ -219,6 +221,7 @@ async def _run_daily_tracked(run_date: date, *, raise_errors: bool) -> dict[str,
         finally:
             _cron_state.running = False
             _cron_state.last_run_finished_at = datetime.now(UTC)
+            _record_widget_run()
             _persist_widget_state()
 
 
@@ -367,6 +370,7 @@ def _persist_widget_state() -> None:
         "last_status": _cron_state.last_status,
         "last_error": _cron_state.last_error,
         "last_summary": _jsonable(_cron_state.last_summary),
+        "widget_runs": _jsonable(_cron_state.widget_runs),
     }
     path = _widget_state_path()
     try:
@@ -395,6 +399,51 @@ def _load_persisted_widget_state() -> None:
     _cron_state.last_error = _optional_str(payload.get("last_error"))
     last_summary = payload.get("last_summary")
     _cron_state.last_summary = last_summary if isinstance(last_summary, dict) else None
+    runs = payload.get("widget_runs")
+    if isinstance(runs, list):
+        _cron_state.widget_runs = [run for run in runs if isinstance(run, dict)]
+    elif _cron_state.last_summary is not None:
+        _cron_state.widget_runs = [_widget_run_snapshot()]
+
+
+def _record_widget_run() -> None:
+    if not isinstance(_cron_state.last_summary, dict):
+        return
+    snapshot = _widget_run_snapshot()
+    run_key = _widget_run_key(snapshot)
+    runs = [run for run in _cron_state.widget_runs if _widget_run_key(run) != run_key]
+    runs.append(snapshot)
+    runs.sort(key=_widget_run_sort_key, reverse=True)
+    _cron_state.widget_runs = runs
+
+
+def _widget_run_snapshot() -> dict[str, Any]:
+    return {
+        "started_at": _isoformat_or_none(_cron_state.last_run_started_at),
+        "finished_at": _isoformat_or_none(_cron_state.last_run_finished_at),
+        "status": _cron_state.last_status,
+        "error": _cron_state.last_error,
+        "summary": _jsonable(_cron_state.last_summary),
+    }
+
+
+def _widget_run_key(run: dict[str, Any]) -> tuple[str, str, str]:
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    return (
+        _optional_str(summary.get("today")) or "",
+        _optional_str(run.get("started_at")) or "",
+        _optional_str(run.get("finished_at")) or "",
+    )
+
+
+def _widget_run_sort_key(run: dict[str, Any]) -> str:
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    return (
+        _optional_str(run.get("finished_at"))
+        or _optional_str(run.get("started_at"))
+        or _optional_str(summary.get("today"))
+        or ""
+    )
 
 
 def _parse_datetime(value: Any) -> datetime | None:
