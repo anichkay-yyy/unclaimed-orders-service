@@ -298,14 +298,14 @@ def build_client_message(order: PickupOrder, extension: ExtensionResult) -> str:
     if extension.new_deadline is not None:
         return (
             "Здравствуйте!💛\n\n"
-            "Обратите внимание, Ваш заказ ожидает получения до "
+            f"Обратите внимание, Ваш заказ {order.external_id} ожидает получения до "
             f"{order.pickup_deadline:%d.%m.%Y}.\n\n"
             f"Но мы уже продлили срок его хранения до {extension.new_deadline:%d.%m.%Y}.✔\n"
             "Заберите, пожалуйста, заказ до этого времени."
         )
     return (
         "Здравствуйте!💛\n\n"
-        "Обратите внимание, Ваш заказ ожидает получения до "
+        f"Обратите внимание, Ваш заказ {order.external_id} ожидает получения до "
         f"{order.pickup_deadline:%d.%m.%Y}.\n\n"
         "Заберите, пожалуйста, заказ до этого времени."
     )
