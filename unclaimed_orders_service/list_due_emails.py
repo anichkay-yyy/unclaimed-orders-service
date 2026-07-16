@@ -27,8 +27,7 @@ def main() -> None:
     parser.add_argument("--today", type=date.fromisoformat, default=datetime.now(UTC).date())
     parser.add_argument(
         "--carrier",
-        # Only 5Post is enabled for now; saferoute/yandex temporarily disabled.
-        choices=("fivepost",),
+        choices=("fivepost", "yandex"),
         default="fivepost",
     )
     parser.add_argument(
@@ -64,9 +63,6 @@ async def _list_due_emails(
     include_emails: bool = False,
     bypass_due: bool = False,
 ) -> dict[str, Any]:
-    # NOTE: Only 5Post is enabled for now. SafeRoute and Yandex are temporarily
-    # disabled (Yandex deadline is only a heuristic). Re-enable the blocks below
-    # to bring them back.
     if carrier == "fivepost":
         return await _list_carrier_due_emails(
             today=today,
@@ -76,46 +72,16 @@ async def _list_due_emails(
             include_emails=include_emails,
             bypass_due=bypass_due,
         )
-    # if carrier == "yandex":
-    #     return await _list_carrier_due_emails(
-    #         today=today,
-    #         carrier_name="yandex",
-    #         carrier_client=_build_yandex_client(),
-    #         limit=limit,
-    #         include_emails=include_emails,
-    #         bypass_due=bypass_due,
-    #     )
-    # if carrier == "all":
-    #     saferoute = await _list_saferoute_due_emails(
-    #         today=today,
-    #         limit=limit,
-    #         include_emails=include_emails,
-    #         bypass_due=bypass_due,
-    #     )
-    #     fivepost = await _list_carrier_due_emails(
-    #         today=today,
-    #         carrier_name="fivepost",
-    #         carrier_client=_build_fivepost_client(),
-    #         limit=limit,
-    #         include_emails=include_emails,
-    #         bypass_due=bypass_due,
-    #     )
-    #     yandex = await _list_carrier_due_emails(
-    #         today=today,
-    #         carrier_name="yandex",
-    #         carrier_client=_build_yandex_client(),
-    #         limit=limit,
-    #         include_emails=include_emails,
-    #         bypass_due=bypass_due,
-    #     )
-    #     return {"today": today.isoformat(), "carriers": [saferoute, fivepost, yandex]}
-    # return await _list_saferoute_due_emails(
-    #     today=today,
-    #     limit=limit,
-    #     include_emails=include_emails,
-    #     bypass_due=bypass_due,
-    # )
-    msg = f"carrier {carrier!r} is disabled; only 'fivepost' is enabled for now"
+    if carrier == "yandex":
+        return await _list_carrier_due_emails(
+            today=today,
+            carrier_name="yandex",
+            carrier_client=_build_yandex_client(),
+            limit=limit,
+            include_emails=include_emails,
+            bypass_due=bypass_due,
+        )
+    msg = f"unsupported carrier: {carrier!r}"
     raise SystemExit(msg)
 
 
@@ -539,20 +505,26 @@ def _bitrix_webhook_base_url() -> str | None:
 
 def _build_yandex_client() -> YandexDeliveryClient:
     base_url = os.environ.get(
-        "YANDEX_DELIVERY_API_BASE_URL",
-        "https://b2b-authproxy.taxi.yandex.net",
+        "YANDEX_DELIVERY_INTERNAL_API_BASE_URL",
+        "https://dostavka.yandex.ru",
     )
-    oauth_token = os.environ.get("YANDEX_DELIVERY_OAUTH_TOKEN")
-    if not oauth_token:
-        msg = "YANDEX_DELIVERY_OAUTH_TOKEN is required"
+    session_id = os.environ.get("YANDEX_DELIVERY_SESSION_ID")
+    client_id = os.environ.get("YANDEX_DELIVERY_CLIENT_ID")
+    if not session_id or not client_id:
+        msg = "YANDEX_DELIVERY_SESSION_ID and YANDEX_DELIVERY_CLIENT_ID are required"
         raise SystemExit(msg)
-    storage_days = int(os.environ.get("YANDEX_STORAGE_DAYS", "7"))
-    lookback_days = int(os.environ.get("YANDEX_LOOKBACK_DAYS", "90"))
     return YandexDeliveryClient(
         base_url=base_url,
-        oauth_token=oauth_token,
-        storage_days=storage_days,
-        lookback_days=lookback_days,
+        session_id=session_id,
+        client_id=client_id,
+        previous_session_id=os.environ.get("YANDEX_DELIVERY_SESSION_ID_PREVIOUS"),
+        timezone_name=os.environ.get("YANDEX_DELIVERY_TIMEZONE", "Europe/Moscow"),
+        max_pages=int(os.environ.get("YANDEX_DELIVERY_MAX_PAGES", "20")),
+        enrich_concurrency=int(os.environ.get("YANDEX_DELIVERY_CONCURRENCY", "8")),
+        poll_attempts=int(os.environ.get("YANDEX_DELIVERY_POLL_ATTEMPTS", "120")),
+        poll_interval_seconds=float(
+            os.environ.get("YANDEX_DELIVERY_POLL_INTERVAL_SECONDS", "5")
+        ),
     )
 
 

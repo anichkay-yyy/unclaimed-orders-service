@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -908,99 +909,372 @@ class BitrixContactClient:
 
 @dataclass(frozen=True, slots=True)
 class YandexDeliveryClient:
-    """Yandex Delivery carrier API client for pickup orders."""
+    """Yandex Delivery pickup client backed by the corporate account API."""
 
     base_url: str
-    oauth_token: str
-    lookback_days: int = 90
-    storage_days: int = 7
-    waiting_status_codes: tuple[str, ...] = (
-        "RECIPIENT_PICKUP_POINT",
-        "DELIVERY_ARRIVED_PICKUP_POINT",
-    )
+    session_id: str
+    client_id: str
+    previous_session_id: str | None = None
+    timezone_name: str = "Europe/Moscow"
+    max_pages: int = 20
+    enrich_concurrency: int = 8
+    poll_attempts: int = 120
+    poll_interval_seconds: float = 5.0
+    waiting_status_code: str = "accepted_on_destination_point"
 
     async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
-        """List Yandex Delivery requests waiting at pickup points."""
-        to_dt = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
-        from_dt = to_dt - timedelta(days=self.lookback_days)
-        payload = {
-            "from": _format_utc_datetime(from_dt),
-            "to": _format_utc_datetime(to_dt),
-        }
-        async with httpx.AsyncClient(base_url=self.base_url.rstrip("/"), timeout=30.0) as client:
-            response = await client.post(
-                "/api/b2b/platform/requests/info",
-                json=payload,
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            body = response.json()
-            rows = body.get("requests") if isinstance(body, dict) else None
-        if not isinstance(rows, list):
-            return []
+        """List waiting orders with exact storage metadata from the account API."""
+        del today
+        last_auth_error: httpx.HTTPStatusError | None = None
+        for position, session_id in enumerate(self._session_candidates()):
+            try:
+                return await self._list_waiting_with_session(session_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {401, 403}:
+                    raise
+                last_auth_error = exc
+                logger.warning(
+                    "Yandex session %s was rejected with HTTP %s",
+                    "primary" if position == 0 else "fallback",
+                    exc.response.status_code,
+                )
+        if last_auth_error is not None:
+            raise last_auth_error
+        msg = "Yandex account session is not configured"
+        raise RuntimeError(msg)
 
-        orders: list[PickupOrder] = []
-        for row in rows:
-            if isinstance(row, dict) and self._is_waiting_order(row):
-                orders.append(self._to_pickup_order(row))
-        return orders
+    async def _list_waiting_with_session(self, session_id: str) -> list[PickupOrder]:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        async with httpx.AsyncClient(
+            base_url=self.base_url.rstrip("/"),
+            cookies={"Session_id": session_id},
+            timeout=timeout,
+        ) as client:
+            headers = await self._session_headers(client)
+            rows = await self._list_order_rows(client, headers)
+            semaphore = asyncio.Semaphore(max(1, self.enrich_concurrency))
+            enriched = await asyncio.gather(
+                *(self._load_pickup_order(client, headers, row, semaphore) for row in rows)
+            )
+        return [order for order in enriched if order is not None]
 
     async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
-        """Storage extension is intentionally not enabled in the discovery MVP."""
-        return ExtensionResult(ok=False, error="yandex_extension_not_configured")
+        """Extend storage to the exact maximum date offered by Yandex."""
+        del days
+        customer_order_id = _optional_text(order.metadata.get("customer_order_id"))
+        expiration_value = _optional_text(
+            order.metadata.get("max_available_expiration_date")
+        )
+        if not customer_order_id:
+            return ExtensionResult(ok=False, error="missing_yandex_customer_order_id")
+        if not expiration_value:
+            return ExtensionResult(ok=False, error="yandex_extension_not_available")
 
-    def _headers(self) -> dict[str, str]:
+        new_deadline = self._local_date(expiration_value)
+        if new_deadline is None:
+            return ExtensionResult(ok=False, error="invalid_yandex_extension_deadline")
+
+        auth_errors = {"yandex_extension_http_401", "yandex_extension_http_403"}
+        last_result: ExtensionResult | None = None
+        for position, session_id in enumerate(self._session_candidates()):
+            result = await self._extend_with_session(
+                session_id,
+                customer_order_id=customer_order_id,
+                expiration_value=expiration_value,
+                new_deadline=new_deadline,
+            )
+            if result.error not in auth_errors:
+                return result
+            last_result = result
+            logger.warning(
+                "Yandex session %s was rejected during extension",
+                "primary" if position == 0 else "fallback",
+            )
+        return last_result or ExtensionResult(ok=False, error="yandex_extension_auth_failed")
+
+    async def check_session(self) -> dict[str, object]:
+        """Verify current and fallback sessions without changing any order."""
+        last_status_code: int | None = None
+        for position, session_id in enumerate(self._session_candidates()):
+            timeout = httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0)
+            async with httpx.AsyncClient(
+                base_url=self.base_url.rstrip("/"),
+                cookies={"Session_id": session_id},
+                timeout=timeout,
+            ) as client:
+                headers = await self._session_headers(client)
+                response = await client.post(
+                    "/api/b2b/dcaa/delivery/v1/udp/customer-order/list",
+                    json={
+                        "filters": {"product_statuses": [self.waiting_status_code]},
+                        "client_timezone": self.timezone_name,
+                    },
+                    headers=headers,
+                )
+                if response.status_code < 400:
+                    payload = response.json()
+                    rows = payload.get("customer_orders") if isinstance(payload, dict) else None
+                    return {
+                        "valid": True,
+                        "using_fallback": position > 0,
+                        "first_page_orders": len(rows) if isinstance(rows, list) else 0,
+                    }
+                last_status_code = response.status_code
+                if response.status_code not in {401, 403}:
+                    response.raise_for_status()
+        return {
+            "valid": False,
+            "using_fallback": False,
+            "status_code": last_status_code,
+        }
+
+    async def _extend_with_session(
+        self,
+        session_id: str,
+        *,
+        customer_order_id: str,
+        expiration_value: str,
+        new_deadline: date,
+    ) -> ExtensionResult:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url.rstrip("/"),
+                cookies={"Session_id": session_id},
+                timeout=timeout,
+            ) as client:
+                headers = await self._session_headers(client)
+                response = await client.post(
+                    "/api/b2b/dcaa/delivery/v1/udp/customer-order/storage-period/edit",
+                    json={
+                        "storage_expiration_date": expiration_value,
+                        "customer_order_id": customer_order_id,
+                    },
+                    headers=headers,
+                )
+                if response.status_code >= 400:
+                    return ExtensionResult(
+                        ok=False,
+                        error=f"yandex_extension_http_{response.status_code}",
+                    )
+                payload = response.json()
+                editing_request_id = _optional_text(
+                    payload.get("editing_request_id") if isinstance(payload, dict) else None
+                )
+                if not editing_request_id:
+                    return ExtensionResult(
+                        ok=False,
+                        error="yandex_extension_request_id_missing",
+                    )
+                return await self._wait_for_extension(
+                    client,
+                    headers,
+                    editing_request_id=editing_request_id,
+                    new_deadline=new_deadline,
+                )
+        except httpx.HTTPStatusError as exc:
+            return ExtensionResult(
+                ok=False,
+                error=f"yandex_extension_http_{exc.response.status_code}",
+            )
+        except httpx.TimeoutException:
+            return ExtensionResult(ok=False, error="yandex_extension_timeout")
+        except httpx.NetworkError:
+            return ExtensionResult(ok=False, error="yandex_extension_network_error")
+
+    def _session_candidates(self) -> tuple[str, ...]:
+        candidates = [self.session_id]
+        previous = _optional_text(self.previous_session_id)
+        if previous and previous != self.session_id:
+            candidates.append(previous)
+        return tuple(candidate for candidate in candidates if candidate)
+
+    async def _session_headers(self, client: httpx.AsyncClient) -> dict[str, str]:
+        response = await client.get("/account/api/csrf_token/")
+        response.raise_for_status()
+        payload = response.json()
+        csrf_token = _optional_text(payload.get("sk") if isinstance(payload, dict) else None)
+        if not csrf_token:
+            msg = "Yandex account API did not return a CSRF token"
+            raise RuntimeError(msg)
         return {
             "Accept": "application/json",
             "Accept-Language": "ru-RU",
-            "Authorization": f"Bearer {self.oauth_token}",
             "Content-Type": "application/json",
+            "X-B2B-Client-Id": self.client_id,
+            "X-CSRF-Token": csrf_token,
         }
 
-    def _is_waiting_order(self, row: dict) -> bool:
-        state = _dict(row.get("state"))
-        return str(state.get("status") or "").strip() in self.waiting_status_codes
+    async def _list_order_rows(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> list[dict]:
+        rows: list[dict] = []
+        cursor: str | None = None
+        for _page in range(max(1, self.max_pages)):
+            payload: dict[str, object] = {
+                "filters": {"product_statuses": [self.waiting_status_code]},
+                "client_timezone": self.timezone_name,
+            }
+            if cursor:
+                payload["cursor"] = cursor
+            response = await client.post(
+                "/api/b2b/dcaa/delivery/v1/udp/customer-order/list",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            body = response.json()
+            page_rows = body.get("customer_orders") if isinstance(body, dict) else None
+            if not isinstance(page_rows, list):
+                return rows
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            next_cursor = _optional_text(body.get("cursor"))
+            if not next_cursor or next_cursor == cursor:
+                return rows
+            cursor = next_cursor
+        msg = f"Yandex order list exceeded {self.max_pages} pages"
+        raise RuntimeError(msg)
 
-    def _to_pickup_order(self, row: dict) -> PickupOrder:
-        request = _dict(row.get("request"))
-        info = _dict(request.get("info"))
-        recipient = _dict(request.get("recipient_info"))
-        state = _dict(row.get("state"))
-        status_dt = _parse_datetime_value(
-            state.get("timestamp_utc") or state.get("timestamp") or state.get("timestamp_unix")
-        )
-        if status_dt is None:
-            msg = f"Yandex request {row.get('request_id')} has no pickup status timestamp"
+    async def _load_pickup_order(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        row: dict,
+        semaphore: asyncio.Semaphore,
+    ) -> PickupOrder | None:
+        customer_order_id = _optional_text(row.get("customer_order_id"))
+        if not customer_order_id:
+            return None
+        async with semaphore:
+            response = await client.post(
+                "/api/b2b/dcaa/delivery/v1/udp/customer-order/details",
+                params={"customer_order_id": customer_order_id},
+                json={"client_timezone": self.timezone_name},
+                headers=headers,
+            )
+            response.raise_for_status()
+            details = response.json()
+        if not isinstance(details, dict):
+            return None
+        status = _dict(details.get("status"))
+        if _optional_text(status.get("status")) != self.waiting_status_code:
+            return None
+        return self._to_pickup_order(details)
+
+    def _to_pickup_order(self, details: dict) -> PickupOrder:
+        customer_order_id = _optional_text(details.get("customer_order_id"))
+        storage_period = _dict(details.get("storage_period"))
+        deadline_value = storage_period.get("current_expiration_date")
+        pickup_deadline = self._local_date(deadline_value)
+        if pickup_deadline is None:
+            msg = f"Yandex order {customer_order_id or 'unknown'} has no storage deadline"
             raise RuntimeError(msg)
+
+        recipient = _dict(_dict(details.get("contacts")).get("recipient"))
+        status = _dict(details.get("status"))
+        extension_action = _dict(
+            _dict(details.get("available_actions")).get("extend_storage_period")
+        )
+        max_expiration = _optional_text(
+            extension_action.get("max_available_expiration_date")
+        )
+        edit_requests = details.get("edit_requests")
+        storage_edits = [
+            edit
+            for edit in edit_requests
+            if isinstance(edit, dict)
+            and edit.get("edit_type") == "destination_point_storage_expiration_date_edit"
+        ] if isinstance(edit_requests, list) else []
+        active_edit_statuses = {"pending", "processing", "in_progress", "success"}
+        already_extended = any(
+            _optional_text(edit.get("status")) in active_edit_statuses for edit in storage_edits
+        )
         lookup_number = _first_text(
-            info.get("operator_request_id"),
-            row.get("courier_order_id"),
-            row.get("request_id"),
+            details.get("client_order_id"),
+            _first_operator_order_id(details.get("operator_order_ids")),
+            customer_order_id,
         )
         return PickupOrder(
-            external_id=lookup_number or str(row.get("request_id") or ""),
+            external_id=lookup_number or customer_order_id or "",
             recipient_name=" ".join(
                 part
                 for part in (
-                    _optional_text(recipient.get("first_name")),
                     _optional_text(recipient.get("last_name")),
+                    _optional_text(recipient.get("first_name")),
+                    _optional_text(recipient.get("middle_name")),
                 )
                 if part
             ),
-            pickup_deadline=(status_dt + timedelta(days=self.storage_days)).date(),
+            pickup_deadline=pickup_deadline,
             status="waiting_pickup",
             email=_optional_text(recipient.get("email")),
+            already_extended=already_extended,
             metadata={
                 "carrier": "yandex",
-                "request_id": row.get("request_id"),
+                "customer_order_id": customer_order_id,
                 "lookup_number": lookup_number,
-                "status_code": state.get("status"),
-                "status_label": state.get("description"),
-                "status_date": state.get("timestamp_utc") or state.get("timestamp"),
-                "storage_days": self.storage_days,
-                "deadline_source": "state.timestamp_plus_storage_days",
+                "status_code": status.get("status"),
+                "status_label": status.get("name"),
+                "is_about_to_expire": storage_period.get("is_about_to_expire"),
+                "max_available_expiration_date": max_expiration,
+                "expiration_extension_allowed": bool(max_expiration),
+                "already_extended_source": "yandex.edit_requests",
+                "storage_edit_statuses": [edit.get("status") for edit in storage_edits],
+                "deadline_source": "yandex.storage_period.current_expiration_date",
             },
         )
+
+    async def _wait_for_extension(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        *,
+        editing_request_id: str,
+        new_deadline: date,
+    ) -> ExtensionResult:
+        terminal_failures = {"failed", "canceled", "cancelled", "rejected"}
+        for attempt in range(max(1, self.poll_attempts)):
+            response = await client.post(
+                "/api/b2b/dcaa/delivery/v1/udp/customer-order/edit/status",
+                params={"editing_request_id": editing_request_id},
+                json={},
+                headers=headers,
+            )
+            if response.status_code >= 400:
+                return ExtensionResult(
+                    ok=False,
+                    error=f"yandex_extension_status_http_{response.status_code}",
+                    upstream_id=editing_request_id,
+                )
+            payload = response.json()
+            status = _optional_text(payload.get("status") if isinstance(payload, dict) else None)
+            if status == "success":
+                return ExtensionResult(
+                    ok=True,
+                    new_deadline=new_deadline,
+                    upstream_id=editing_request_id,
+                )
+            if status in terminal_failures:
+                return ExtensionResult(
+                    ok=False,
+                    error=f"yandex_extension_failed:{status}",
+                    upstream_id=editing_request_id,
+                )
+            if attempt + 1 < max(1, self.poll_attempts):
+                await asyncio.sleep(max(0.0, self.poll_interval_seconds))
+        return ExtensionResult(
+            ok=False,
+            error="yandex_extension_status_timeout",
+            upstream_id=editing_request_id,
+        )
+
+    def _local_date(self, value: object) -> date | None:
+        parsed = _parse_datetime_value(value)
+        if parsed is None:
+            return None
+        return parsed.astimezone(ZoneInfo(self.timezone_name)).date()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1237,6 +1511,17 @@ def _first_text(*values: object) -> str | None:
     return None
 
 
+def _first_operator_order_id(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    for row in value:
+        if isinstance(row, dict):
+            order_id = _optional_text(row.get("operator_order_id"))
+            if order_id:
+                return order_id
+    return None
+
+
 def _optional_text(value: object) -> str | None:
     if value is None:
         return None
@@ -1275,7 +1560,3 @@ def _optional_bool(value: object) -> bool | None:
         if normalized in {"0", "false", "no", "n", "нет"}:
             return False
     return None
-
-
-def _format_utc_datetime(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")

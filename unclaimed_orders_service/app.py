@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -158,6 +159,7 @@ async def unclaimed_orders_widget_state() -> dict[str, Any]:
         last_error=_cron_state.last_error,
         last_summary=_cron_state.last_summary,
         run_history=_cron_state.widget_runs,
+        yandex_session=_yandex_session_state(),
     )
 
 
@@ -183,7 +185,23 @@ async def cron_status() -> dict[str, Any]:
         "last_status": _cron_state.last_status,
         "last_error": _cron_state.last_error,
         "last_summary": _cron_state.last_summary,
+        "yandex_session": _yandex_session_state(),
     }
+
+
+@app.get("/runs/yandex-session")
+async def yandex_session_status() -> dict[str, Any]:
+    """Probe Yandex account authentication without changing any order."""
+    state = _yandex_session_state()
+    if not state["configured"]:
+        return state
+    try:
+        probe = await _build_yandex_client().check_session()
+    except httpx.HTTPError as exc:
+        return {**state, "valid": False, "probe_error": type(exc).__name__}
+    except RuntimeError as exc:
+        return {**state, "valid": False, "probe_error": str(exc)}
+    return {**state, **probe}
 
 
 async def _run_daily_once(run_date: date) -> dict[str, Any]:
@@ -303,8 +321,37 @@ def _fivepost_configured() -> bool:
 
 def _yandex_configured() -> bool:
     return bool(
-        os.environ.get("YANDEX_DELIVERY_OAUTH_TOKEN") or os.environ.get("YANDEX_DELIVERY_TOKEN")
+        os.environ.get("YANDEX_DELIVERY_SESSION_ID")
+        and os.environ.get("YANDEX_DELIVERY_CLIENT_ID")
     )
+
+
+def _yandex_session_state(*, now: datetime | None = None) -> dict[str, Any]:
+    configured = _yandex_configured()
+    expires_at = _parse_datetime(os.environ.get("YANDEX_DELIVERY_SESSION_EXPIRES_AT"))
+    current = now or datetime.now(UTC)
+    if not configured:
+        status = "unconfigured"
+        days_remaining = None
+    elif expires_at is None:
+        status = "unknown_expiration"
+        days_remaining = None
+    else:
+        seconds_remaining = (expires_at - current).total_seconds()
+        days_remaining = max(0, int(seconds_remaining // 86400))
+        if seconds_remaining <= 0:
+            status = "expired"
+        elif days_remaining <= 30:
+            status = "expiring"
+        else:
+            status = "valid"
+    return {
+        "configured": configured,
+        "status": status,
+        "expires_at": _isoformat_or_none(expires_at),
+        "days_remaining": days_remaining,
+        "fallback_configured": bool(os.environ.get("YANDEX_DELIVERY_SESSION_ID_PREVIOUS")),
+    }
 
 
 async def _daily_cron_loop(config: CronConfig) -> None:

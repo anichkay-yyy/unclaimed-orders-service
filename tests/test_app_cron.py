@@ -75,6 +75,25 @@ def test_load_cron_config_can_be_disabled(monkeypatch: MonkeyPatch) -> None:
     assert config.enabled is False
 
 
+def test_yandex_session_state_warns_before_expiration(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("YANDEX_DELIVERY_SESSION_ID", "session-id")
+    monkeypatch.setenv("YANDEX_DELIVERY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("YANDEX_DELIVERY_SESSION_ID_PREVIOUS", "previous-session")
+    monkeypatch.setenv("YANDEX_DELIVERY_SESSION_EXPIRES_AT", "2026-08-10T00:00:00+00:00")
+
+    state = app_module._yandex_session_state(
+        now=datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    )
+
+    assert state == {
+        "configured": True,
+        "status": "expiring",
+        "expires_at": "2026-08-10T00:00:00+00:00",
+        "days_remaining": 25,
+        "fallback_configured": True,
+    }
+
+
 def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
 

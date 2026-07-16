@@ -10,12 +10,13 @@ Current carrier sources: SafeRoute/Magnit Post, 5Post, and Yandex Delivery.
 2. Keep only carrier orders that are currently waiting at pickup points.
 3. Compute the pickup deadline from carrier data:
    SafeRoute uses tracking `holdDays`, 5Post uses `details.expiredDate`, and
-   Yandex uses pickup-status timestamp plus `YANDEX_STORAGE_DAYS`.
+   Yandex uses the exact `storage_period.current_expiration_date` from its
+   corporate account API.
 4. Keep orders whose storage deadline is inside the notification window.
 5. Resolve each due order in ERP by order number and read the customer email.
 6. Exclude already-extended orders. For 5Post the source of truth is carrier
-   `details.expirationDateExtensionAllowed == false`; other carriers fall back to
-   ERP `delivery_data.has_extend_hold_request`.
+   `details.expirationDateExtensionAllowed == false`; for Yandex it is a
+   successful storage-period `edit_request`; other carriers fall back to ERP.
 7. Find the Bitrix contact by email with `crm.contact.list`.
 8. After storage is extended, notify the Bitrix contact: prefer a non-web Open
    Line chat linked to the contact; exclude online-chat connectors
@@ -29,7 +30,7 @@ Customer message after a successful extension:
 ```text
 Здравствуйте!💛
 
-Обратите внимание, Ваш заказ ожидает получения до DD.MM.YYYY.
+Обратите внимание, Ваш заказ N ожидает получения до DD.MM.YYYY.
 
 Но мы уже продлили срок его хранения до DD.MM.YYYY.✔
 Заберите, пожалуйста, заказ до этого времени.
@@ -120,15 +121,28 @@ List emails for currently due carrier orders:
 uv run --project tools/unclaimed_orders_service \
   python -m unclaimed_orders_service.list_due_emails \
   --today 2026-07-06 \
-  --carrier saferoute \
+  --carrier yandex \
   --include-emails
 ```
 
-Use `--carrier fivepost`, `--carrier yandex`, or `--carrier all` for the other
-carrier-first flows. 5Post reads `/partners-portal/api/v1/orders/query` and
-Yandex reads `/api/b2b/platform/requests/info`; ERP is used only after the
-carrier due-filter to resolve email. The 5Post already-extended flag comes from
-5Post details; ERP is only a fallback for carriers that do not provide it.
+Use `--carrier fivepost` or `--carrier yandex`. 5Post reads the partner portal;
+Yandex reads the corporate account order list and details endpoints. ERP is
+used only after the carrier due-filter to resolve email. Treat
+`YANDEX_DELIVERY_SESSION_ID` as a Yandex Passport secret.
+
+Rotate the Yandex session after signing in to the corporate account in the
+Chrome profile connected to Chrome Tool:
+
+```bash
+SOPS_AGE_KEY_FILE=/path/to/age.key \
+  uv run python -m unclaimed_orders_service.rotate_yandex_session
+```
+
+The command performs a read-only API check before changing `.env.sops`, keeps
+the old session as a fallback, and never prints either session value. After the
+rotation, redeploy the service. Check the active/fallback session and expiration
+without changing orders through `GET /runs/yandex-session`; `/runs/cron` and the
+widget state also expose the non-secret session status.
 
 Bitrix contact lookup is read-only and optional. Configure either a full webhook
 base URL:

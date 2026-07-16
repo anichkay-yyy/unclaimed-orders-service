@@ -16,6 +16,11 @@ _REASON_LABELS = {
     "extension_not_allowed_or_already_extended": "Продление недоступно или уже выполнено",
     "extension_deadline_not_confirmed": "Новая дата продления не подтверждена",
     "yandex_extension_not_configured": "Продление Яндекс Доставки через API не настроено",
+    "yandex_extension_not_available": "Яндекс Доставка не разрешила продление",
+    "yandex_extension_request_id_missing": "Яндекс не подтвердил запрос на продление",
+    "yandex_extension_status_timeout": "Яндекс не подтвердил продление за 10 минут",
+    "yandex_extension_timeout": "Таймаут продления в Яндекс Доставке",
+    "yandex_extension_network_error": "Сетевая ошибка продления в Яндекс Доставке",
 }
 
 
@@ -46,6 +51,7 @@ def build_widget_state(
     last_error: str | None,
     last_summary: Mapping[str, Any] | None,
     run_history: Sequence[Mapping[str, Any]] | None = None,
+    yandex_session: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a stable DTO for the service widget."""
     rows = _history_rows(run_history)
@@ -78,6 +84,7 @@ def build_widget_state(
             "success": len(rows) - failed,
             "errors": failed,
         },
+        "yandex_session": dict(yandex_session or {}),
         "rows": rows,
     }
 
@@ -152,7 +159,7 @@ def render_widget_html() -> str:
     button:disabled { cursor: default; opacity: .65; }
     .summary {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 12px;
     }
@@ -267,6 +274,10 @@ def render_widget_html() -> str:
         <div class="label">Ошибки</div>
         <div class="value" data-errors>-</div>
       </div>
+      <div class="metric">
+        <div class="label">Сессия Яндекс</div>
+        <div class="value" data-yandex-session>-</div>
+      </div>
     </section>
     <section class="panel">
       <table>
@@ -377,6 +388,7 @@ def render_widget_html() -> str:
       const cron = payload.cron || {};
       const lastRun = payload.last_run || {};
       const totals = payload.totals || {};
+      const yandexSession = payload.yandex_session || {};
       document.querySelector("[data-subtitle]").textContent =
         `Последний запуск: ${formatDateTime(lastRun.finished_at || lastRun.started_at)}` +
         ` · статус: ${text(lastRun.status)}`;
@@ -385,6 +397,15 @@ def render_widget_html() -> str:
       document.querySelector("[data-next]").textContent = formatDateTime(cron.next_run_at);
       document.querySelector("[data-orders]").textContent = text(totals.orders ?? totals.checked);
       document.querySelector("[data-errors]").textContent = text(totals.errors);
+      const sessionLabels = {
+        valid: "активна",
+        expiring: `истекает через ${text(yandexSession.days_remaining)} дн.`,
+        expired: "истекла",
+        unknown_expiration: "срок неизвестен",
+        unconfigured: "не настроена"
+      };
+      document.querySelector("[data-yandex-session]").textContent =
+        sessionLabels[yandexSession.status] || text(yandexSession.status);
       renderRows();
     }
 
@@ -603,6 +624,13 @@ def _reason_label(reason: Any) -> str:
         return "Сетевая ошибка API перевозчика"
     if text.startswith("carrier_fetch_failed:"):
         return f"Ошибка чтения заказов перевозчика: {text.removeprefix('carrier_fetch_failed:')}"
+    if text.startswith("yandex_extension_http_"):
+        return f"Ошибка API продления Яндекса ({text.removeprefix('yandex_extension_http_')})"
+    if text.startswith("yandex_extension_status_http_"):
+        status = text.removeprefix("yandex_extension_status_http_")
+        return f"Ошибка проверки продления Яндекса ({status})"
+    if text.startswith("yandex_extension_failed:"):
+        return f"Яндекс отклонил продление ({text.removeprefix('yandex_extension_failed:')})"
     if text.startswith("notification_failed:"):
         return f"Ошибка отправки уведомления: {text.removeprefix('notification_failed:')}"
     return text

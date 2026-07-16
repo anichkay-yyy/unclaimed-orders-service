@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import httpx
 from unclaimed_orders_service.adapters import (
@@ -1070,13 +1070,140 @@ async def test_bitrix_contact_notifier_finds_contact_and_notifies_route() -> Non
     assert result.destination == "openline:tg-1"
 
 
-async def test_yandex_client_lists_waiting_orders_from_requests_info(
+async def test_yandex_client_lists_waiting_orders_from_internal_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = YandexDeliveryClient(
         base_url="https://yandex.test",
-        oauth_token="token",
-        storage_days=7,
+        session_id="session-id",
+        client_id="client-id",
+    )
+
+    class FakeHttpClient:
+        list_calls = 0
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            assert kwargs["cookies"] == {"Session_id": "session-id"}
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, path: str, **kwargs: object) -> FakeResponse:
+            assert path == "/account/api/csrf_token/"
+            return FakeResponse({"sk": "csrf-token"})
+
+        async def post(self, path: str, **kwargs: object) -> FakeResponse:
+            headers = kwargs["headers"]
+            assert isinstance(headers, dict)
+            assert headers["X-B2B-Client-Id"] == "client-id"
+            assert headers["X-CSRF-Token"] == "csrf-token"
+            if path.endswith("/customer-order/list"):
+                FakeHttpClient.list_calls += 1
+                if FakeHttpClient.list_calls == 1:
+                    assert "cursor" not in kwargs["json"]
+                    return FakeResponse(
+                        {
+                            "customer_orders": [{"customer_order_id": "customer-1"}],
+                            "cursor": "next-page",
+                        }
+                    )
+                assert kwargs["json"]["cursor"] == "next-page"
+                return FakeResponse(
+                    {
+                        "customer_orders": [{"customer_order_id": "customer-2"}],
+                    }
+                )
+            if path.endswith("/customer-order/details"):
+                params = kwargs["params"]
+                assert isinstance(params, dict)
+                customer_order_id = params["customer_order_id"]
+                if customer_order_id == "customer-1":
+                    return FakeResponse(
+                        {
+                            "customer_order_id": "customer-1",
+                            "client_order_id": "430439FPerp",
+                            "status": {
+                                "status": "accepted_on_destination_point",
+                                "name": "Ждет получения",
+                            },
+                            "contacts": {
+                                "recipient": {
+                                    "first_name": "Ирина",
+                                    "last_name": "Петрова",
+                                    "email": "client@example.com",
+                                }
+                            },
+                            "storage_period": {
+                                "current_expiration_date": "2026-07-12T21:00:00+00:00",
+                                "is_about_to_expire": True,
+                            },
+                            "available_actions": {
+                                "extend_storage_period": {
+                                    "max_available_expiration_date": (
+                                        "2026-07-19T21:00:00+00:00"
+                                    )
+                                }
+                            },
+                            "edit_requests": [],
+                        }
+                    )
+                return FakeResponse(
+                    {
+                        "customer_order_id": "customer-2",
+                        "client_order_id": "430440FPerp",
+                        "status": {
+                            "status": "accepted_on_destination_point",
+                            "name": "Ждет получения",
+                        },
+                        "contacts": {"recipient": {"first_name": "Олег"}},
+                        "storage_period": {
+                            "current_expiration_date": "2026-07-23T21:00:00+00:00",
+                            "is_about_to_expire": False,
+                        },
+                        "available_actions": {},
+                        "edit_requests": [
+                            {
+                                "edit_type": (
+                                    "destination_point_storage_expiration_date_edit"
+                                ),
+                                "status": "success",
+                                "editing_request_id": "edit-existing",
+                            }
+                        ],
+                    }
+                )
+            raise AssertionError(path)
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    orders = await client.list_waiting_pickup_orders(today=date(2026, 7, 6))
+
+    assert len(orders) == 2
+    assert orders[0].external_id == "430439FPerp"
+    assert orders[0].pickup_deadline == date(2026, 7, 13)
+    assert orders[0].already_extended is False
+    assert orders[0].metadata["max_available_expiration_date"] == (
+        "2026-07-19T21:00:00+00:00"
+    )
+    assert orders[0].metadata["deadline_source"] == (
+        "yandex.storage_period.current_expiration_date"
+    )
+    assert orders[1].already_extended is True
+    assert orders[1].metadata["already_extended_source"] == "yandex.edit_requests"
+
+
+async def test_yandex_client_extends_storage_and_waits_for_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = YandexDeliveryClient(
+        base_url="https://yandex.test",
+        session_id="session-id",
+        client_id="client-id",
+        poll_attempts=1,
+        poll_interval_seconds=0,
     )
 
     class FakeHttpClient:
@@ -1089,46 +1216,85 @@ async def test_yandex_client_lists_waiting_orders_from_requests_info(
         async def __aexit__(self, *args: object) -> None:
             return None
 
+        async def get(self, path: str, **kwargs: object) -> FakeResponse:
+            assert path == "/account/api/csrf_token/"
+            return FakeResponse({"sk": "csrf-token"})
+
         async def post(self, path: str, **kwargs: object) -> FakeResponse:
-            if path == "/api/b2b/platform/requests/info":
-                return FakeResponse(
-                    {
-                        "requests": [
-                            {
-                                "request_id": "request-1",
-                                "courier_order_id": "courier-1",
-                                "request": {
-                                    "info": {"operator_request_id": "430439FPerp"},
-                                    "recipient_info": {
-                                        "first_name": "Ирина",
-                                        "last_name": "Петрова",
-                                        "email": "client@example.com",
-                                    },
-                                },
-                                "state": {
-                                    "status": "DELIVERY_ARRIVED_PICKUP_POINT",
-                                    "description": "Ждёт в пункте выдачи",
-                                    "timestamp": "2026-07-06T08:04:08.000000Z",
-                                },
-                            },
-                            {
-                                "request_id": "request-2",
-                                "request": {"info": {"operator_request_id": "430440FPerp"}},
-                                "state": {"status": "DELIVERY_DELIVERED"},
-                            },
-                        ]
-                    }
-                )
+            if path.endswith("/customer-order/storage-period/edit"):
+                assert kwargs["json"] == {
+                    "storage_expiration_date": "2026-07-19T21:00:00+00:00",
+                    "customer_order_id": "customer-1",
+                }
+                return FakeResponse({"editing_request_id": "edit-1"})
+            if path.endswith("/customer-order/edit/status"):
+                assert kwargs["params"] == {"editing_request_id": "edit-1"}
+                return FakeResponse({"status": "success"})
             raise AssertionError(path)
 
     monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+    order = PickupOrder(
+        external_id="430439FPerp",
+        recipient_name="Ирина",
+        pickup_deadline=date(2026, 7, 13),
+        status="waiting_pickup",
+        metadata={
+            "carrier": "yandex",
+            "customer_order_id": "customer-1",
+            "max_available_expiration_date": "2026-07-19T21:00:00+00:00",
+        },
+    )
 
-    orders = await client.list_waiting_pickup_orders(today=date(2026, 7, 6))
+    result = await client.extend_storage(order, days=5)
 
-    assert len(orders) == 1
-    assert orders[0].external_id == "430439FPerp"
-    assert orders[0].pickup_deadline == date(2026, 7, 13)
-    assert orders[0].metadata["deadline_source"] == "state.timestamp_plus_storage_days"
+    assert result == ExtensionResult(
+        ok=True,
+        new_deadline=date(2026, 7, 20),
+        upstream_id="edit-1",
+    )
+
+
+async def test_yandex_client_falls_back_to_previous_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = YandexDeliveryClient(
+        base_url="https://yandex.test",
+        session_id="new-session",
+        previous_session_id="previous-session",
+        client_id="client-id",
+    )
+
+    class FakeHttpClient:
+        sessions: ClassVar[list[str]] = []
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            cookies = kwargs["cookies"]
+            assert isinstance(cookies, dict)
+            self.session_id = str(cookies["Session_id"])
+            self.sessions.append(self.session_id)
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, path: str, **kwargs: object) -> FakeResponse:
+            assert path == "/account/api/csrf_token/"
+            return FakeResponse({"sk": "csrf-token"})
+
+        async def post(self, path: str, **kwargs: object) -> FakeResponse:
+            assert path.endswith("/customer-order/list")
+            if self.session_id == "new-session":
+                return FakeResponse({"code": "unauthorized"}, status_code=401)
+            return FakeResponse({"customer_orders": []})
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    orders = await client.list_waiting_pickup_orders(today=date(2026, 7, 16))
+
+    assert orders == []
+    assert FakeHttpClient.sessions == ["new-session", "previous-session"]
 
 
 async def _fake_login(self: SafeRouteClient) -> str:
@@ -1136,12 +1302,16 @@ async def _fake_login(self: SafeRouteClient) -> str:
 
 
 class FakeResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, *, status_code: int = 200) -> None:
         self._payload = payload
-        self.status_code = 200
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status_code < 400:
+            return
+        request = httpx.Request("POST", "https://yandex.test/api")
+        response = httpx.Response(self.status_code, request=request)
+        raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
     def json(self) -> object:
         return self._payload
