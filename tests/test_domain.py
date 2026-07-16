@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 from unclaimed_orders_service.adapters import ErpEmailCarrierClient
 from unclaimed_orders_service.domain import (
+    CarrierListFailure,
     DecisionAction,
     ExtensionResult,
     NotificationChannel,
@@ -74,6 +75,25 @@ class FakeTasks:
     async def create_task(self, order: PickupOrder, *, reason: str) -> str:
         self.reasons.append(reason)
         return f"task-{order.external_id}"
+
+
+@dataclass(slots=True)
+class CarrierWithListingFailure:
+    orders: list[PickupOrder]
+    failures: tuple[CarrierListFailure, ...]
+    result: ExtensionResult
+
+    async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
+        return self.orders
+
+    def consume_listing_failures(self) -> tuple[CarrierListFailure, ...]:
+        failures = self.failures
+        self.failures = ()
+        return failures
+
+    async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
+        assert days == 5
+        return self.result
 
 
 @dataclass(slots=True)
@@ -184,6 +204,37 @@ async def test_daily_summary_preserves_carrier_from_order_metadata() -> None:
     assert summary.decisions[0].carrier == "yandex"
     assert summary.decisions[0].reason == "yandex_extension_not_configured"
     assert tasks.reasons == ["yandex_extension_not_configured"]
+
+
+async def test_records_carrier_listing_failure_and_continues_orders() -> None:
+    today = date(2026, 7, 4)
+    new_deadline = today + timedelta(days=6)
+    yandex_order = PickupOrder(
+        external_id="431501FPerp",
+        recipient_name="Ирина",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="client@example.com",
+        metadata={"carrier": "yandex"},
+    )
+    carrier = CarrierWithListingFailure(
+        orders=[yandex_order],
+        failures=(CarrierListFailure(carrier="fivepost", reason="carrier_auth_failed:401"),),
+        result=ExtensionResult(ok=True, new_deadline=new_deadline),
+    )
+    tasks = FakeTasks()
+
+    summary = await UnclaimedOrdersService(carrier, FakeNotifier(), tasks).run_daily(today=today)
+
+    assert [decision.action for decision in summary.decisions] == [
+        DecisionAction.OPERATOR_TASK,
+        DecisionAction.EXTENDED,
+        DecisionAction.NOTIFIED,
+    ]
+    assert summary.decisions[0].order_id == "carrier:fivepost"
+    assert summary.decisions[0].carrier == "fivepost"
+    assert summary.decisions[0].reason == "carrier_auth_failed:401"
+    assert tasks.reasons == ["carrier_auth_failed:401"]
 
 
 async def test_skips_notification_when_extension_is_not_allowed() -> None:

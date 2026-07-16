@@ -41,6 +41,14 @@ class PickupOrder:
 
 
 @dataclass(frozen=True, slots=True)
+class CarrierListFailure:
+    """Carrier-level order listing failure."""
+
+    carrier: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExtensionResult:
     """Carrier storage extension result."""
 
@@ -137,7 +145,10 @@ class UnclaimedOrdersService:
     async def run_daily(self, *, today: date) -> RunSummary:
         """Run one daily check."""
         orders = await self._carrier.list_waiting_pickup_orders(today=today)
-        decisions: list[RunDecision] = []
+        decisions = [
+            await self._carrier_failure_task(failure, today=today)
+            for failure in _consume_listing_failures(self._carrier)
+        ]
 
         for order in orders:
             days_left = (order.pickup_deadline - today).days
@@ -231,12 +242,43 @@ class UnclaimedOrdersService:
             carrier=_order_carrier(order),
         )
 
+    async def _carrier_failure_task(
+        self,
+        failure: CarrierListFailure,
+        *,
+        today: date,
+    ) -> RunDecision:
+        order = PickupOrder(
+            external_id=f"carrier:{failure.carrier}",
+            recipient_name="",
+            pickup_deadline=today,
+            status="carrier_list_failed",
+            metadata={"carrier": failure.carrier},
+        )
+        await self._operator_tasks.create_task(order, reason=failure.reason)
+        return RunDecision(
+            order.external_id,
+            DecisionAction.OPERATOR_TASK,
+            failure.reason,
+            carrier=failure.carrier,
+        )
+
 
 def _order_carrier(order: PickupOrder) -> str:
     carrier = order.metadata.get("carrier")
     if isinstance(carrier, str) and carrier.strip():
         return carrier.strip()
     return "5post"
+
+
+def _consume_listing_failures(carrier: CarrierClient) -> tuple[CarrierListFailure, ...]:
+    consume = getattr(carrier, "consume_listing_failures", None)
+    if not callable(consume):
+        return ()
+    failures = consume()
+    if not isinstance(failures, tuple):
+        return ()
+    return tuple(failure for failure in failures if isinstance(failure, CarrierListFailure))
 
 
 def _notification_failure_reason(exc: Exception) -> str:

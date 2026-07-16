@@ -42,6 +42,30 @@ class RecordingCarrier:
         return self.result
 
 
+class StaticListCarrier:
+    def __init__(self, name: str, orders: list[PickupOrder]) -> None:
+        self.name = name
+        self.orders = orders
+
+    async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
+        return self.orders
+
+    async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
+        raise AssertionError("not used")
+
+
+class FailingListCarrier:
+    def __init__(self, name: str, exc: Exception) -> None:
+        self.name = name
+        self.exc = exc
+
+    async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
+        raise self.exc
+
+    async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
+        raise AssertionError("not used")
+
+
 async def test_list_orders_cli_payload_uses_demo_source() -> None:
     payload = await _list_orders(source="demo", today=date(2026, 7, 4))
 
@@ -73,6 +97,33 @@ async def test_composite_carrier_dispatches_extension_by_order_metadata() -> Non
     assert result.error == "yandex_extension_not_configured"
     assert fivepost.extended == []
     assert yandex.extended == ["431501FPerp"]
+
+
+async def test_composite_carrier_tolerates_listing_failure() -> None:
+    request = httpx.Request("POST", "https://fivepost.test/auth")
+    response = httpx.Response(401, request=request)
+    fivepost = FailingListCarrier(
+        "fivepost",
+        httpx.HTTPStatusError("bad credentials", request=request, response=response),
+    )
+    yandex_order = PickupOrder(
+        external_id="431501FPerp",
+        recipient_name="Ирина",
+        pickup_deadline=date(2026, 7, 15),
+        status="waiting_pickup",
+        metadata={"carrier": "yandex"},
+    )
+    yandex = StaticListCarrier("yandex", [yandex_order])
+    client = CompositeCarrierClient((fivepost, yandex), tolerate_list_errors=True)
+
+    orders = await client.list_waiting_pickup_orders(today=date(2026, 7, 13))
+    failures = client.consume_listing_failures()
+
+    assert orders == [yandex_order]
+    assert len(failures) == 1
+    assert failures[0].carrier == "fivepost"
+    assert failures[0].reason == "carrier_auth_failed:401"
+    assert client.consume_listing_failures() == ()
 
 
 async def test_saferoute_client_enriches_waiting_magnit_orders(

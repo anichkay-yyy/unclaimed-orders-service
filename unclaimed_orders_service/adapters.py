@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
 
 from unclaimed_orders_service.domain import (
+    CarrierListFailure,
     ExtensionResult,
     NotificationChannel,
     NotificationResult,
@@ -58,14 +59,40 @@ class CompositeCarrierClient:
     """Carrier adapter that combines several carrier sources."""
 
     carriers: tuple[Any, ...]
+    tolerate_list_errors: bool = False
+    _listing_failures: list[CarrierListFailure] = field(default_factory=list, init=False)
 
     async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
         """Return waiting pickup orders from every configured carrier."""
+        self._listing_failures.clear()
         orders: list[PickupOrder] = []
         for carrier in self.carriers:
-            list_orders = carrier.list_waiting_pickup_orders
-            orders.extend(await list_orders(today=today))
+            try:
+                list_orders = carrier.list_waiting_pickup_orders
+                orders.extend(await list_orders(today=today))
+            except Exception as exc:
+                if not self.tolerate_list_errors:
+                    raise
+                carrier_name = _carrier_name(carrier)
+                logger.warning(
+                    "carrier listing failed for %s: %s",
+                    carrier_name,
+                    exc,
+                    exc_info=True,
+                )
+                self._listing_failures.append(
+                    CarrierListFailure(
+                        carrier=carrier_name,
+                        reason=_carrier_list_failure_reason(exc),
+                    )
+                )
         return orders
+
+    def consume_listing_failures(self) -> tuple[CarrierListFailure, ...]:
+        """Return and clear carrier-level listing failures."""
+        failures = tuple(self._listing_failures)
+        self._listing_failures.clear()
+        return failures
 
     async def extend_storage(self, order: PickupOrder, *, days: int) -> ExtensionResult:
         """Delegate extension to the carrier named in order metadata."""
@@ -1049,6 +1076,14 @@ class ErpEmailCarrierClient:
         extend = self.carrier.extend_storage
         return await extend(order, days=days)
 
+    def consume_listing_failures(self) -> tuple[CarrierListFailure, ...]:
+        """Return carrier-level listing failures from the wrapped carrier."""
+        consume = getattr(self.carrier, "consume_listing_failures", None)
+        if not callable(consume):
+            return ()
+        failures = consume()
+        return failures if isinstance(failures, tuple) else ()
+
 
 @dataclass(frozen=True, slots=True)
 class BitrixContactNotifier:
@@ -1096,6 +1131,19 @@ def _carrier_name(carrier: Any) -> str:
     if isinstance(carrier, SafeRouteClient):
         return "saferoute"
     return _optional_text(getattr(carrier, "name", None)) or carrier.__class__.__name__.lower()
+
+
+def _carrier_list_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code in {401, 403}:
+            return f"carrier_auth_failed:{status_code}"
+        return f"carrier_http_failed:{status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "carrier_timeout"
+    if isinstance(exc, httpx.NetworkError):
+        return "carrier_network_error"
+    return f"carrier_fetch_failed:{type(exc).__name__}"
 
 
 def _latest_status(row: dict) -> dict:

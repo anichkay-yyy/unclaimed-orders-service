@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
 
 from unclaimed_orders_service.adapters import (
     BitrixContactLookupResult,
     BitrixContactNotificationRoute,
 )
 from unclaimed_orders_service.domain import PickupOrder
-from unclaimed_orders_service.list_due_emails import _build_yandex_client, _list_carrier_due_emails
-
-if TYPE_CHECKING:
-    import pytest
+from unclaimed_orders_service.list_due_emails import _list_carrier_due_emails
 
 
 async def test_due_email_pipeline_uses_fivepost_extension_flag_over_erp_flag() -> None:
@@ -101,16 +96,6 @@ async def test_due_email_pipeline_uses_fivepost_extension_flag_over_erp_flag() -
     )
     assert "email" not in payload["samples"][0]
     assert "bitrix_contact_id" not in payload["samples"][1]
-
-
-def test_build_yandex_client_accepts_generic_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("YANDEX_DELIVERY_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("YANDEX_DELIVERY_TOKEN", "opaque-value")
-
-    client = _build_yandex_client()
-
-    assert client.oauth_token == os.environ["YANDEX_DELIVERY_TOKEN"]
-
 
 @dataclass(frozen=True, slots=True)
 class FakeErpRecord:

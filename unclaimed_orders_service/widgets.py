@@ -27,6 +27,7 @@ def widget_catalog() -> dict[str, Any]:
                 "path": WIDGET_PATH,
                 "name": "Pickup storage monitor",
                 "description": "Daily pickup storage extension and customer notification status.",
+                "visibility": "org",
             }
         ]
     }
@@ -589,6 +590,19 @@ def _reason_label(reason: Any) -> str:
         return "-"
     if text in _REASON_LABELS:
         return _REASON_LABELS[text]
+    if text.startswith("carrier_auth_failed:"):
+        return (
+            "Ошибка авторизации в API перевозчика "
+            f"({text.removeprefix('carrier_auth_failed:')})"
+        )
+    if text.startswith("carrier_http_failed:"):
+        return f"Ошибка API перевозчика ({text.removeprefix('carrier_http_failed:')})"
+    if text == "carrier_timeout":
+        return "Таймаут API перевозчика"
+    if text == "carrier_network_error":
+        return "Сетевая ошибка API перевозчика"
+    if text.startswith("carrier_fetch_failed:"):
+        return f"Ошибка чтения заказов перевозчика: {text.removeprefix('carrier_fetch_failed:')}"
     if text.startswith("notification_failed:"):
         return f"Ошибка отправки уведомления: {text.removeprefix('notification_failed:')}"
     return text

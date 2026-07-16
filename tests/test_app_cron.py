@@ -84,13 +84,16 @@ def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatc
     assert response.status_code == 200
     assert response.json() == {
         "widgets": [
-            {
-                "path": "/widgets/unclaimed-orders",
-                "name": "Pickup storage monitor",
-                "description": "Daily pickup storage extension and customer notification status.",
-            }
-        ]
-    }
+                {
+                    "path": "/widgets/unclaimed-orders",
+                    "name": "Pickup storage monitor",
+                    "description": (
+                        "Daily pickup storage extension and customer notification status."
+                    ),
+                    "visibility": "org",
+                }
+            ]
+        }
 
 
 def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
@@ -232,6 +235,51 @@ def test_widget_state_projects_carrier_and_extension_error(monkeypatch: MonkeyPa
     assert payload["rows"][0]["carrier"] == "yandex"
     assert payload["rows"][0]["result"] == "error"
     assert payload["rows"][0]["reason"] == "Продление Яндекс Доставки через API не настроено"
+
+
+def test_widget_state_projects_carrier_auth_error(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-07-15",
+        "mode": "fivepost+yandex_live",
+        "checked": 0,
+        "decisions": [
+            {
+                "order_id": "carrier:fivepost",
+                "carrier": "fivepost",
+                "action": DecisionAction.OPERATOR_TASK,
+                "reason": "carrier_auth_failed:401",
+            },
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["rows"] == [
+        {
+            "order_id": "carrier:fivepost",
+            "carrier": "fivepost",
+            "result": "error",
+            "outcome": "operator_task",
+            "contact_id": "",
+            "contact_url": "",
+            "contact_label": "-",
+            "message_id": "",
+            "run_date": "2026-07-15",
+            "processed_at": "",
+            "channel_label": "-",
+            "new_deadline": "-",
+            "reason": "Ошибка авторизации в API перевозчика (401)",
+        }
+    ]
 
 
 def test_widget_state_hides_routine_and_unavailable_skips(monkeypatch: MonkeyPatch) -> None:

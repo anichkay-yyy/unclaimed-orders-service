@@ -24,10 +24,6 @@ Current carrier sources: SafeRoute/Magnit Post, 5Post, and Yandex Delivery.
    or Open Line sending fails.
 10. Create an operator task when extension or notification cannot be completed.
 
-Yandex Delivery is read-enabled through the same carrier abstraction. Its public
-API discovery has not confirmed a storage-extension endpoint, so Yandex orders
-currently stop before notification with `yandex_extension_not_configured`.
-
 Customer message after a successful extension:
 
 ```text
@@ -51,7 +47,6 @@ The service starts an embedded daily scheduler by default:
 UNCLAIMED_ORDERS_CRON_ENABLED=1
 UNCLAIMED_ORDERS_CRON_TIME=09:00
 UNCLAIMED_ORDERS_CRON_TZ=Europe/Moscow
-UNCLAIMED_ORDERS_WIDGET_STATE_PATH=/data/unclaimed_orders_widget_state.json
 ```
 
 Check the scheduler state:
@@ -83,8 +78,6 @@ health: /health
 ```
 
 Decrypt `.env.sops` with the same age private key used for `erp-proxy-service`.
-The widget stores the last run DTO at `UNCLAIMED_ORDERS_WIDGET_STATE_PATH` so
-visible rows survive container restarts/redeploys.
 
 Then:
 
@@ -127,15 +120,15 @@ List emails for currently due carrier orders:
 uv run --project tools/unclaimed_orders_service \
   python -m unclaimed_orders_service.list_due_emails \
   --today 2026-07-06 \
-  --carrier fivepost \
+  --carrier saferoute \
   --include-emails
 ```
 
-Use `--carrier fivepost` or `--carrier yandex` for the carrier-first flows.
-5Post reads `/partners-portal/api/v1/orders/query` and Yandex reads
-`/api/b2b/platform/requests/info`; ERP is used only after the carrier due-filter
-to resolve email. The 5Post already-extended flag comes from 5Post details; ERP
-is only a fallback for carriers that do not provide it.
+Use `--carrier fivepost`, `--carrier yandex`, or `--carrier all` for the other
+carrier-first flows. 5Post reads `/partners-portal/api/v1/orders/query` and
+Yandex reads `/api/b2b/platform/requests/info`; ERP is used only after the
+carrier due-filter to resolve email. The 5Post already-extended flag comes from
+5Post details; ERP is only a fallback for carriers that do not provide it.
 
 Bitrix contact lookup is read-only and optional. Configure either a full webhook
 base URL:
@@ -151,13 +144,6 @@ BITRIX_PORTAL_HOST=example.bitrix24.ru
 BITRIX_WEBHOOK_PATH=1/webhook-token
 ```
 
-Set `BITRIX_EMAIL_FROM` to a Bitrix-connected outbound mailbox for e-mail
-fallbacks:
-
-```bash
-BITRIX_EMAIL_FROM="Служба поддержки клиентов Фабрики Фотокниги <support@fabrika-fotoknigi.com>"
-```
-
 The output includes `bitrix_configured`, `bitrix_contact_found`,
 `bitrix_contact_missing`, `bitrix_contact_errors`,
 `notification_openline_routes`, `notification_email_fallback_routes`,
@@ -171,9 +157,7 @@ filter, takes the first two waiting orders per carrier, runs the ERP lookup on
 each, and reports per-order `samples` (lookup number, ERP found, resolved order
 number, email present, already-extended, error).
 
-When carrier credentials and Bitrix webhook env are present, the daily service
-uses live carrier reads/extensions and Bitrix notification adapters. Configure
-`FIVEPOST_LOGIN`/`FIVEPOST_PASSWORD` for 5Post, and
-`YANDEX_DELIVERY_OAUTH_TOKEN` or `YANDEX_DELIVERY_TOKEN` for Yandex Delivery.
+When `FIVEPOST_LOGIN`, `FIVEPOST_PASSWORD`, and Bitrix webhook env are present,
+the daily service uses live 5Post extension and Bitrix notification adapters.
 Operator tasks still use the dry-run adapter. Without the live env, the service
 falls back to demo dry-run mode.

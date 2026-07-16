@@ -254,7 +254,7 @@ async def list_waiting_orders(today: date | None = None) -> dict[str, Any]:
 
 def _build_daily_service() -> tuple[UnclaimedOrdersService, str]:
     """Build the live carrier service when env is configured, otherwise demo."""
-    carrier, carrier_mode = _build_configured_carrier()
+    carrier, carrier_mode = _build_configured_carrier(tolerate_list_errors=True)
     bitrix = _build_bitrix_contact_client()
     if carrier is not None and bitrix is not None:
         return (
@@ -278,7 +278,7 @@ def _build_daily_service() -> tuple[UnclaimedOrdersService, str]:
     )
 
 
-def _build_configured_carrier() -> tuple[Any | None, str]:
+def _build_configured_carrier(*, tolerate_list_errors: bool = False) -> tuple[Any | None, str]:
     carriers: list[Any] = []
     names: list[str] = []
     if _fivepost_configured():
@@ -289,9 +289,12 @@ def _build_configured_carrier() -> tuple[Any | None, str]:
         names.append("yandex")
     if not carriers:
         return None, ""
-    if len(carriers) == 1:
+    if len(carriers) == 1 and not tolerate_list_errors:
         return carriers[0], names[0]
-    return CompositeCarrierClient(tuple(carriers)), "+".join(names)
+    return (
+        CompositeCarrierClient(tuple(carriers), tolerate_list_errors=tolerate_list_errors),
+        "+".join(names),
+    )
 
 
 def _fivepost_configured() -> bool:
