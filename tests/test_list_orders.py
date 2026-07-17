@@ -648,6 +648,43 @@ async def test_bitrix_contact_client_finds_contact_by_email(
     ]
 
 
+async def test_bitrix_contact_client_finds_contact_by_normalized_phone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    class FakeHttpClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> FakeResponse:
+            requests.append({"url": url, "json": kwargs.get("json")})
+            return FakeResponse({"result": [{"ID": "2624", "NAME": "Татьяна"}]})
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    client = BitrixContactClient(webhook_base_url="https://bitrix.test/rest/1/token")
+    result = await client.find_contact_by_phone("+7 967 612 79 60")
+
+    assert result.found is True
+    assert result.contact_id == "2624"
+    assert requests[0] == {
+        "url": "https://bitrix.test/rest/1/token/crm.contact.list.json",
+        "json": {
+            "filter": {"PHONE": "79676127960"},
+            "select": ["ID", "NAME", "LAST_NAME", "EMAIL", "PHONE", "IM"],
+            "order": {"ID": "ASC"},
+            "start": 0,
+        },
+    }
+
+
 async def test_bitrix_contact_client_reads_next_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1029,7 +1066,9 @@ async def test_bitrix_contact_client_recovers_email_created_before_http_500(
                             {
                                 "ID": "5150",
                                 "SUBJECT": "Subject",
-                                "DESCRIPTION": "Здравствуйте! Ваш заказ 436469FPerp ожидает получения.",
+                                "DESCRIPTION": (
+                                    "Здравствуйте! Ваш заказ 436469FPerp ожидает получения."
+                                ),
                                 "COMMUNICATIONS": [
                                     {
                                         "VALUE": "client@example.com",
@@ -1109,7 +1148,9 @@ async def test_bitrix_contact_client_checks_only_latest_email_when_recovering(
                             {
                                 "ID": "5150",
                                 "SUBJECT": "Subject",
-                                "DESCRIPTION": "Здравствуйте! Ваш заказ 436469FPerp ожидает получения.",
+                                "DESCRIPTION": (
+                                    "Здравствуйте! Ваш заказ 436469FPerp ожидает получения."
+                                ),
                                 "COMMUNICATIONS": [
                                     {
                                         "VALUE": "client@example.com",
@@ -1221,6 +1262,52 @@ async def test_bitrix_contact_notifier_finds_contact_and_notifies_route() -> Non
 
     assert result.channel is NotificationChannel.BITRIX
     assert result.destination == "openline:tg-1"
+
+
+async def test_bitrix_contact_notifier_falls_back_to_phone_lookup() -> None:
+    class FakeBitrix:
+        async def find_contact_by_email(self, email: str) -> BitrixContactLookupResult:
+            assert email == "info@graniphoto.ru"
+            return BitrixContactLookupResult(found=False, matches=0)
+
+        async def find_contact_by_phone(self, phone: str) -> BitrixContactLookupResult:
+            assert phone == "+7 967 612 79 60"
+            return BitrixContactLookupResult(found=True, contact_id="2624", matches=1)
+
+        async def notify_contact(
+            self,
+            contact_id: str,
+            *,
+            fallback_email: str | None,
+            subject: str,
+            message: str,
+        ) -> NotificationResult:
+            assert contact_id == "2624"
+            assert fallback_email == "info@graniphoto.ru"
+            assert subject == "Subject"
+            assert message == "Message"
+            return NotificationResult(
+                channel=NotificationChannel.EMAIL,
+                destination="grani_t@inbox.ru",
+                message_id="message-1",
+                contact_id=contact_id,
+            )
+
+    order = PickupOrder(
+        external_id="430339-9qujr",
+        recipient_name="Client",
+        pickup_deadline=date(2026, 7, 17),
+        status="waiting_pickup",
+        email="info@graniphoto.ru",
+        metadata={"erp_phone": "+7 967 612 79 60"},
+    )
+
+    notifier = BitrixContactNotifier(bitrix=FakeBitrix())
+    result = await notifier.notify(order, subject="Subject", message="Message")
+
+    assert result.channel is NotificationChannel.EMAIL
+    assert result.destination == "grani_t@inbox.ru"
+    assert result.contact_id == "2624"
 
 
 async def test_yandex_client_lists_waiting_orders_from_internal_api(

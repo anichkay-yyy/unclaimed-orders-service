@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -541,6 +542,32 @@ class BitrixContactClient:
         if not normalized_email:
             return BitrixContactLookupResult(found=False, error="empty_email")
 
+        return await self._find_contact_by_filter({"EMAIL": normalized_email})
+
+    async def find_contact_by_phone(self, phone: str) -> BitrixContactLookupResult:
+        """Find the first Bitrix contact matching a phone number."""
+        phone_values = _phone_lookup_values(phone)
+        if not phone_values:
+            return BitrixContactLookupResult(found=False, error="empty_phone")
+
+        total_matches = 0
+        first_error: str | None = None
+        for phone_value in phone_values:
+            result = await self._find_contact_by_filter({"PHONE": phone_value})
+            total_matches += result.matches
+            if result.found:
+                return result
+            first_error = first_error or result.error
+        return BitrixContactLookupResult(
+            found=False,
+            matches=total_matches,
+            error=first_error,
+        )
+
+    async def _find_contact_by_filter(
+        self,
+        filter_payload: dict[str, str],
+    ) -> BitrixContactLookupResult:
         url = f"{self.webhook_base_url.rstrip('/')}/crm.contact.list.json"
         matches = 0
         first_contact_id: str | None = None
@@ -551,7 +578,7 @@ class BitrixContactClient:
                 response = await client.post(
                     url,
                     json={
-                        "filter": {"EMAIL": normalized_email},
+                        "filter": filter_payload,
                         "select": ["ID", "NAME", "LAST_NAME", "EMAIL", "PHONE", "IM"],
                         "order": {"ID": "ASC"},
                         "start": start,
@@ -1407,6 +1434,7 @@ class ErpEmailCarrierClient:
                 "lookup_number": lookup_number,
                 "erp_found": getattr(record, "found", False),
                 "erp_order_number": getattr(record, "order_number", None),
+                "erp_phone": getattr(record, "phone", None),
                 "erp_error": getattr(record, "error", None),
             }
             already_extended = order.already_extended
@@ -1449,19 +1477,39 @@ class BitrixContactNotifier:
     bitrix: BitrixContactClient
 
     async def notify(self, order: PickupOrder, *, subject: str, message: str) -> NotificationResult:
-        """Find a Bitrix contact by e-mail and notify it."""
-        if not order.email:
-            msg = f"order {order.external_id} has no customer e-mail for Bitrix lookup"
+        """Find a Bitrix contact by customer details and notify it."""
+        email = _optional_text(order.email)
+        phone = _first_text(
+            order.metadata.get("erp_phone"),
+            order.metadata.get("customer_phone"),
+            order.metadata.get("payer_phone"),
+            order.metadata.get("recipient_phone"),
+            order.metadata.get("phone"),
+        )
+        if not email and not phone:
+            msg = f"order {order.external_id} has no customer e-mail or phone for Bitrix lookup"
             raise ValueError(msg)
 
-        contact = await self.bitrix.find_contact_by_email(order.email)
+        contact = (
+            await self.bitrix.find_contact_by_email(email)
+            if email
+            else BitrixContactLookupResult(found=False, error="empty_email")
+        )
+        lookup_errors = [contact.error] if contact.error else []
+        if (not contact.found or not contact.contact_id) and phone:
+            phone_contact = await self.bitrix.find_contact_by_phone(phone)
+            if phone_contact.found and phone_contact.contact_id:
+                contact = phone_contact
+            elif phone_contact.error:
+                lookup_errors.append(phone_contact.error)
         if not contact.found or not contact.contact_id:
-            msg = f"Bitrix contact was not found for order {order.external_id}: {contact.error}"
+            error = "; ".join(lookup_errors) or "not_found"
+            msg = f"Bitrix contact was not found for order {order.external_id}: {error}"
             raise ValueError(msg)
 
         return await self.bitrix.notify_contact(
             contact.contact_id,
-            fallback_email=order.email,
+            fallback_email=email,
             subject=subject,
             message=message,
         )
@@ -1592,6 +1640,34 @@ def _first_text(*values: object) -> str | None:
         if text:
             return text
     return None
+
+
+def _phone_lookup_values(phone: str) -> tuple[str, ...]:
+    raw = _optional_text(phone)
+    if not raw:
+        return ()
+
+    candidates: list[str] = []
+    digits = re.sub(r"\D+", "", raw)
+    if digits:
+        if len(digits) == 10:
+            candidates.extend((f"7{digits}", f"+7{digits}", f"8{digits}"))
+        elif len(digits) == 11 and digits.startswith("7"):
+            candidates.extend((digits, f"+{digits}", f"8{digits[1:]}"))
+        elif len(digits) == 11 and digits.startswith("8"):
+            candidates.extend((f"7{digits[1:]}", digits, f"+7{digits[1:]}"))
+        else:
+            candidates.append(digits)
+    candidates.append(raw)
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return tuple(result)
 
 
 def _first_operator_order_id(value: object) -> str | None:

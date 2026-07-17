@@ -89,6 +89,33 @@ async def test_erp_source_lookup_returns_first_order_email(
     }
 
 
+async def test_erp_source_lookup_prefers_customer_phone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakePlatformService(
+        orders=[
+            {
+                "id": 1,
+                "number": "430339",
+                "delivery_data": {
+                    "email": "info@graniphoto.ru",
+                    "phone": "+7 913 839 40 03",
+                },
+                "payment_data": {"phone": "+7 967 612 79 60"},
+                "user": {"phoneFormatted": "+7 967 612 79 60"},
+            }
+        ]
+    )
+    monkeypatch.setattr("unclaimed_orders_service.erp._build_platform_service", lambda: service)
+    monkeypatch.setattr("unclaimed_orders_service.erp._normalize_track_number", _fake_normalize)
+
+    record = await ErpSourceLookup().find_order("430339")
+
+    assert record.found is True
+    assert record.email == "info@graniphoto.ru"
+    assert record.phone == "+7 967 612 79 60"
+
+
 async def test_erp_source_lookup_stops_when_email_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

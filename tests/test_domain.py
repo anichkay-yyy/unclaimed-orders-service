@@ -101,6 +101,7 @@ class FakeErpRecord:
     found: bool
     order_number: str | None = None
     email: str | None = None
+    phone: str | None = None
     already_extended: bool = False
     error: str | None = None
 
@@ -322,6 +323,7 @@ async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:
             found=True,
             order_number="420861",
             email="erp@example.com",
+            phone="+7 967 612 79 60",
             already_extended=False,
         )
     )
@@ -333,6 +335,7 @@ async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:
     assert erp.lookups == ["m-1"]
     assert orders[0].email == "erp@example.com"
     assert orders[0].metadata["erp_order_number"] == "420861"
+    assert orders[0].metadata["erp_phone"] == "+7 967 612 79 60"
 
 
 async def test_erp_email_carrier_does_not_enrich_outside_window_orders() -> None:

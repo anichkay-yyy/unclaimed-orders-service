@@ -30,6 +30,7 @@ class ErpOrderRecord:
     found: bool
     order_number: str | None = None
     email: str | None = None
+    phone: str | None = None
     already_extended: bool = False
     platform_order: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -74,12 +75,14 @@ class ErpSourceLookup:
         except Exception as exc:
             return ErpOrderRecord(lookup_number=lookup_number, found=False, error=str(exc))
         email = _extract_email(platform_order)
+        phone = _extract_phone(platform_order)
         already_extended = _extract_already_extended(platform_order)
         if not email:
             return ErpOrderRecord(
                 lookup_number=lookup_number,
                 found=True,
                 order_number=resolved_order_number,
+                phone=phone,
                 already_extended=already_extended,
                 platform_order=platform_order,
                 error="email_not_found",
@@ -89,6 +92,7 @@ class ErpSourceLookup:
             found=True,
             order_number=resolved_order_number,
             email=email,
+            phone=phone,
             already_extended=already_extended,
             platform_order=platform_order,
         )
@@ -576,6 +580,26 @@ def _extract_email(platform_order: dict[str, Any]) -> str | None:
         if value:
             return str(value).strip() or None
     value = platform_order.get("email")
+    return str(value).strip() if value else None
+
+
+def _extract_phone(platform_order: dict[str, Any]) -> str | None:
+    user = platform_order.get("user")
+    sources = (
+        platform_order.get("payment_data"),
+        user if isinstance(user, dict) else None,
+        platform_order.get("customer_data"),
+        platform_order.get("delivery_data"),
+    )
+    keys = ("phone", "phoneFormatted", "recipient_phone")
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return str(value).strip() or None
+    value = platform_order.get("recipient_phone") or platform_order.get("phone")
     return str(value).strip() if value else None
 
 
