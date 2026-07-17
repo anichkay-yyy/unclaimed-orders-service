@@ -990,6 +990,159 @@ async def test_bitrix_contact_client_notifies_email_for_online_chat(
     assert fields["SETTINGS"] == {"MESSAGE_FROM": "Support <support@example.com>"}
 
 
+async def test_bitrix_contact_client_recovers_email_created_before_http_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    expected_message = "Здравствуйте!\nВаш заказ 436469FPerp ожидает получения."
+
+    class FakeHttpClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> object:
+            calls.append(url.rsplit("/", maxsplit=1)[-1])
+            if url.endswith("/imopenlines.crm.chat.get.json"):
+                return FakeResponse({"result": []})
+            if url.endswith("/crm.contact.get.json"):
+                return FakeResponse(
+                    {
+                        "result": {
+                            "ID": "123",
+                            "ASSIGNED_BY_ID": "42",
+                            "EMAIL": [{"VALUE": "client@example.com", "VALUE_TYPE": "WORK"}],
+                        }
+                    }
+                )
+            if url.endswith("/crm.activity.add.json"):
+                return FakeBitrixHtmlErrorResponse()
+            if url.endswith("/crm.activity.list.json"):
+                return FakeResponse(
+                    {
+                        "result": [
+                            {
+                                "ID": "5150",
+                                "SUBJECT": "Subject",
+                                "DESCRIPTION": "Здравствуйте! Ваш заказ 436469FPerp ожидает получения.",
+                                "COMMUNICATIONS": [
+                                    {
+                                        "VALUE": "client@example.com",
+                                        "ENTITY_ID": "123",
+                                        "ENTITY_TYPE_ID": "3",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                )
+            raise AssertionError(f"unexpected Bitrix method: {url}")
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    client = BitrixContactClient(
+        webhook_base_url="https://bitrix.test/rest/1/token",
+        email_from="Support <support@example.com>",
+    )
+    result = await client.notify_contact(
+        "123",
+        fallback_email="client@example.com",
+        subject="Subject",
+        message=expected_message,
+    )
+
+    assert result.channel is NotificationChannel.EMAIL
+    assert result.destination == "client@example.com"
+    assert result.message_id == "5150"
+    assert calls[-2:] == ["crm.activity.add.json", "crm.activity.list.json"]
+
+
+async def test_bitrix_contact_client_checks_only_latest_email_when_recovering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHttpClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> object:
+            if url.endswith("/imopenlines.crm.chat.get.json"):
+                return FakeResponse({"result": []})
+            if url.endswith("/crm.contact.get.json"):
+                return FakeResponse(
+                    {
+                        "result": {
+                            "ID": "123",
+                            "ASSIGNED_BY_ID": "42",
+                            "EMAIL": [{"VALUE": "client@example.com", "VALUE_TYPE": "WORK"}],
+                        }
+                    }
+                )
+            if url.endswith("/crm.activity.add.json"):
+                return FakeBitrixHtmlErrorResponse()
+            if url.endswith("/crm.activity.list.json"):
+                return FakeResponse(
+                    {
+                        "result": [
+                            {
+                                "ID": "5151",
+                                "SUBJECT": "Subject",
+                                "DESCRIPTION": "Другое последнее письмо.",
+                                "COMMUNICATIONS": [
+                                    {
+                                        "VALUE": "client@example.com",
+                                        "ENTITY_ID": "123",
+                                        "ENTITY_TYPE_ID": "3",
+                                    }
+                                ],
+                            },
+                            {
+                                "ID": "5150",
+                                "SUBJECT": "Subject",
+                                "DESCRIPTION": "Здравствуйте! Ваш заказ 436469FPerp ожидает получения.",
+                                "COMMUNICATIONS": [
+                                    {
+                                        "VALUE": "client@example.com",
+                                        "ENTITY_ID": "123",
+                                        "ENTITY_TYPE_ID": "3",
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                )
+            raise AssertionError(f"unexpected Bitrix method: {url}")
+
+    monkeypatch.setattr("unclaimed_orders_service.adapters.httpx.AsyncClient", FakeHttpClient)
+
+    client = BitrixContactClient(
+        webhook_base_url="https://bitrix.test/rest/1/token",
+        email_from="Support <support@example.com>",
+    )
+
+    try:
+        await client.notify_contact(
+            "123",
+            fallback_email="client@example.com",
+            subject="Subject",
+            message="Здравствуйте!\nВаш заказ 436469FPerp ожидает получения.",
+        )
+    except ValueError as exc:
+        assert "Bitrix e-mail activity failed for contact 123" in str(exc)
+    else:
+        raise AssertionError("expected notification failure")
+
+
 async def test_bitrix_contact_client_preserves_http_error_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1315,6 +1468,14 @@ class FakeResponse:
 
     def json(self) -> object:
         return self._payload
+
+
+class FakeBitrixHtmlErrorResponse:
+    status_code = 500
+    text = "<pre>[TypeError] array_diff(): Argument #1 ($array) must be of type array</pre>"
+
+    def json(self) -> object:
+        raise ValueError("not json")
 
 
 class FakeErrorResponse:

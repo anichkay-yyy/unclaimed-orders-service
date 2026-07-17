@@ -798,6 +798,21 @@ class BitrixContactClient:
         )
         activity_id = _optional_text(response.get("result"))
         if not activity_id:
+            recovered_activity_id = await self._recover_sent_email_activity(
+                response,
+                contact_id=normalized_contact_id,
+                fallback_email=email,
+                subject=subject,
+                message=message,
+            )
+            if recovered_activity_id is not None:
+                return NotificationResult(
+                    channel=NotificationChannel.EMAIL,
+                    destination=email,
+                    message_id=recovered_activity_id,
+                    contact_id=contact_id,
+                    contact_url=self._contact_url(contact_id),
+                )
             msg = f"Bitrix e-mail activity failed for contact {contact_id}: {response}"
             raise ValueError(msg)
         return NotificationResult(
@@ -807,6 +822,74 @@ class BitrixContactClient:
             contact_id=contact_id,
             contact_url=self._contact_url(contact_id),
         )
+
+    async def _recover_sent_email_activity(
+        self,
+        response: dict[str, object],
+        *,
+        contact_id: int,
+        fallback_email: str,
+        subject: str,
+        message: str,
+    ) -> str | None:
+        """Return the latest matching e-mail activity after a Bitrix HTTP 500."""
+        if response.get("error") != "bitrix_http_500":
+            return None
+        activity_id = await self._latest_matching_email_activity(
+            contact_id=contact_id,
+            fallback_email=fallback_email,
+            subject=subject,
+            message=message,
+        )
+        if activity_id is not None:
+            logger.warning(
+                "Recovered Bitrix e-mail activity %s after HTTP 500 for contact %s",
+                activity_id,
+                contact_id,
+            )
+        return activity_id
+
+    async def _latest_matching_email_activity(
+        self,
+        *,
+        contact_id: int,
+        fallback_email: str,
+        subject: str,
+        message: str,
+    ) -> str | None:
+        response = await self._post_bitrix(
+            f"{self.webhook_base_url.rstrip('/')}/crm.activity.list.json",
+            {
+                "filter": {
+                    "OWNER_ID": contact_id,
+                    "OWNER_TYPE_ID": 3,
+                    "TYPE_ID": 4,
+                    "DIRECTION": 2,
+                },
+                "select": [
+                    "ID",
+                    "SUBJECT",
+                    "DESCRIPTION",
+                    "COMMUNICATIONS",
+                ],
+                "order": {"ID": "DESC"},
+                "start": 0,
+            },
+        )
+        rows = response.get("result")
+        if not isinstance(rows, list) or not rows:
+            return None
+        latest = rows[0]
+        if not isinstance(latest, dict):
+            return None
+        if not _email_activity_matches(
+            latest,
+            fallback_email=fallback_email,
+            subject=subject,
+            message=message,
+        ):
+            return None
+        return _optional_text(latest.get("ID"))
 
     def _contact_url(self, contact_id: str) -> str | None:
         portal = _bitrix_portal_url(self.webhook_base_url)
@@ -1539,6 +1622,33 @@ def _first_contact_email(contact: dict) -> str | None:
             if email:
                 return email
     return None
+
+
+def _email_activity_matches(
+    activity: dict[str, object],
+    *,
+    fallback_email: str,
+    subject: str,
+    message: str,
+) -> bool:
+    if _optional_text(activity.get("SUBJECT")) != subject:
+        return False
+    description = _optional_text(activity.get("DESCRIPTION")) or ""
+    if _normalize_message_text(message) not in _normalize_message_text(description):
+        return False
+    communications = activity.get("COMMUNICATIONS")
+    if not isinstance(communications, list):
+        return True
+    expected_email = fallback_email.strip().casefold()
+    return any(
+        isinstance(row, dict)
+        and (_optional_text(row.get("VALUE")) or "").casefold() == expected_email
+        for row in communications
+    )
+
+
+def _normalize_message_text(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _bitrix_portal_url(webhook_base_url: str) -> str | None:
