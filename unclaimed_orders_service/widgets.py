@@ -142,6 +142,7 @@ def render_widget_html() -> str:
       justify-content: flex-end;
       gap: 8px;
     }
+    .order-search { width: 190px; }
     input, select, button {
       height: 34px;
       border: 1px solid var(--line);
@@ -159,6 +160,34 @@ def render_widget_html() -> str:
       cursor: pointer;
     }
     button:disabled { cursor: default; opacity: .65; }
+    .carrier-filter {
+      display: inline-flex;
+      height: 34px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+    .carrier-filter button {
+      height: 32px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 0 10px;
+      font-weight: 600;
+    }
+    .carrier-filter button:last-child { border-right: 0; }
+    .carrier-filter button[aria-pressed="true"] {
+      background: #e8eef9;
+      color: #174ea6;
+    }
+    .carrier-filter button:focus-visible {
+      position: relative;
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
     .summary {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -237,8 +266,41 @@ def render_widget_html() -> str:
       .shell { padding: 12px; }
       .top { display: block; }
       .toolbar { justify-content: flex-start; margin-top: 12px; }
+      .order-search { flex: 1 1 100%; width: 100%; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      th:nth-child(5), td:nth-child(5) { display: none; }
+      thead { display: none; }
+      tbody, table { display: block; }
+      tbody tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      tbody tr:last-child { border-bottom: 0; }
+      tbody td {
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        overflow-wrap: anywhere;
+      }
+      tbody td::before {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      tbody td:nth-child(1)::before { content: "Заказ"; }
+      tbody td:nth-child(2)::before { content: "Контакт"; }
+      tbody td:nth-child(3)::before { content: "Результат"; }
+      tbody td:nth-child(4)::before { content: "Канал"; }
+      tbody td:nth-child(5) { display: none; }
+      tbody td:nth-child(6) { grid-column: 1 / -1; }
+      tbody td:nth-child(6)::before { content: "Причина"; }
+      tbody td[colspan] { grid-column: 1 / -1; }
+      tbody td[colspan]::before { content: none; }
     }
   </style>
 </head>
@@ -250,6 +312,20 @@ def render_widget_html() -> str:
         <div class="subtitle" data-subtitle>Загрузка...</div>
       </div>
       <div class="toolbar">
+        <input
+          id="orderSearch"
+          class="order-search"
+          type="search"
+          placeholder="Номер заказа"
+          aria-label="Поиск по номеру заказа"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="carrier-filter" role="group" aria-label="Перевозчик">
+          <button type="button" data-carrier="all" aria-pressed="true">Все</button>
+          <button type="button" data-carrier="fivepost" aria-pressed="false">5Post</button>
+          <button type="button" data-carrier="yandex" aria-pressed="false">Яндекс</button>
+        </div>
         <input id="dateFilter" type="date" aria-label="Дата" />
         <select id="resultFilter" aria-label="Результат">
           <option value="all">Все</option>
@@ -300,8 +376,10 @@ def render_widget_html() -> str:
     </section>
   </main>
   <script>
-    const state = { raw: null, loading: false };
+    const state = { raw: null, loading: false, carrier: "all" };
     const rowsEl = document.getElementById("rows");
+    const orderSearch = document.getElementById("orderSearch");
+    const carrierButtons = Array.from(document.querySelectorAll("[data-carrier]"));
     const dateFilter = document.getElementById("dateFilter");
     const resultFilter = document.getElementById("resultFilter");
     const refreshButton = document.getElementById("refreshButton");
@@ -344,9 +422,34 @@ def render_widget_html() -> str:
         `${escapeHtml(row.contact_label || "Контакт")}</a>`;
     }
 
+    function carrierKey(value) {
+      const normalized = String(value || "").trim().toLocaleLowerCase("ru-RU");
+      if (normalized === "5post" || normalized === "fivepost") return "fivepost";
+      if (normalized === "yandex" || normalized === "яндекс") return "yandex";
+      return normalized;
+    }
+
+    function filtersActive() {
+      return Boolean(
+        orderSearch.value.trim() ||
+        state.carrier !== "all" ||
+        dateFilter.value ||
+        resultFilter.value !== "all"
+      );
+    }
+
     function filteredRows() {
       const payload = state.raw || {};
       let rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const orderQuery = orderSearch.value.trim().toLocaleLowerCase("ru-RU");
+      if (orderQuery) {
+        rows = rows.filter((row) =>
+          String(row.order_id || "").toLocaleLowerCase("ru-RU").includes(orderQuery)
+        );
+      }
+      if (state.carrier !== "all") {
+        rows = rows.filter((row) => carrierKey(row.carrier) === state.carrier);
+      }
       if (dateFilter.value) {
         rows = rows.filter((row) => row.run_date === dateFilter.value);
       }
@@ -359,10 +462,16 @@ def render_widget_html() -> str:
 
     function renderRows() {
       const rows = filteredRows();
+      const payloadRows = Array.isArray(state.raw?.rows) ? state.raw.rows : [];
+      const total = payloadRows.length;
+      document.querySelector("[data-orders]").textContent =
+        filtersActive() ? `${rows.length} из ${total}` : text(total);
       if (rows.length === 0) {
         rowsEl.innerHTML = [
           '<tr><td colspan="6">',
-          '<div class="empty">Нет строк для выбранных фильтров</div>',
+          `<div class="empty">${
+            filtersActive() ? "Нет заказов, соответствующих фильтрам" : "Нет заказов"
+          }</div>`,
           '</td></tr>'
         ].join("");
         return;
@@ -397,7 +506,6 @@ def render_widget_html() -> str:
       document.querySelector("[data-cron]").textContent =
         cron.enabled ? `${text(cron.time)} ${text(cron.timezone)}` : "выключен";
       document.querySelector("[data-next]").textContent = formatDateTime(cron.next_run_at);
-      document.querySelector("[data-orders]").textContent = text(totals.orders ?? totals.checked);
       document.querySelector("[data-errors]").textContent = text(totals.errors);
       const sessionLabels = {
         valid: "активна",
@@ -416,7 +524,8 @@ def render_widget_html() -> str:
       state.loading = true;
       refreshButton.disabled = true;
       try {
-        const response = await fetch("./state", { cache: "no-store" });
+        const statePath = `${window.location.pathname.replace(/[/]$/, "")}/state`;
+        const response = await fetch(statePath, { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         state.raw = await response.json();
         render();
@@ -433,7 +542,19 @@ def render_widget_html() -> str:
       }
     }
 
+    function selectCarrier(carrier) {
+      state.carrier = carrier;
+      carrierButtons.forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.carrier === carrier));
+      });
+      renderRows();
+    }
+
     refreshButton.addEventListener("click", load);
+    orderSearch.addEventListener("input", renderRows);
+    carrierButtons.forEach((button) => {
+      button.addEventListener("click", () => selectCarrier(button.dataset.carrier || "all"));
+    });
     dateFilter.addEventListener("change", renderRows);
     resultFilter.addEventListener("change", renderRows);
     load();
