@@ -31,7 +31,9 @@ def widget_catalog() -> dict[str, Any]:
             {
                 "path": WIDGET_PATH,
                 "name": "Pickup storage monitor",
-                "description": "Daily pickup storage extension and customer notification status.",
+                "description": (
+                    "Scheduled pickup storage extension and customer notification status."
+                ),
                 "visibility": "org",
             }
         ]
