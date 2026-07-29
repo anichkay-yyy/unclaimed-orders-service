@@ -180,6 +180,24 @@ def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatc
         }
 
 
+def test_widget_html_exposes_order_and_carrier_filters(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/widgets/unclaimed-orders")
+
+    html = response.text
+    assert response.status_code == 200
+    assert 'id="orderSearch"' in html
+    assert 'aria-label="Поиск по номеру заказа"' in html
+    assert 'data-carrier="fivepost"' in html
+    assert 'data-carrier="yandex"' in html
+    assert "String(row.order_id || \"\")" in html
+    assert "carrierKey(row.carrier) === state.carrier" in html
+    assert 'normalized === "магнит пост"' in html
+    assert 'window.location.pathname.replace(/[/]$/, "")' in html
+
+
 def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
     _reset_cron_state()
