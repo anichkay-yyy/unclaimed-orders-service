@@ -42,13 +42,16 @@ Customer message after a successful extension:
 uv run --project tools/unclaimed_orders_service uvicorn unclaimed_orders_service.app:app --reload --port 8000
 ```
 
-The service starts an embedded daily scheduler by default:
+The service starts an embedded twice-daily scheduler by default:
 
 ```bash
 UNCLAIMED_ORDERS_CRON_ENABLED=1
-UNCLAIMED_ORDERS_CRON_TIME=09:00
+UNCLAIMED_ORDERS_CRON_TIMES=09:00,21:00
 UNCLAIMED_ORDERS_CRON_TZ=Europe/Moscow
 ```
+
+`UNCLAIMED_ORDERS_CRON_TIME` remains supported for deployments configured with
+one legacy daily time.
 
 Check the scheduler state:
 

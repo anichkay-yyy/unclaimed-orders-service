@@ -21,12 +21,11 @@ if TYPE_CHECKING:
     from pytest import MonkeyPatch
 
 
-def test_next_run_uses_same_day_when_before_configured_time() -> None:
+def test_next_run_uses_morning_slot_when_before_morning() -> None:
     timezone = ZoneInfo("Europe/Moscow")
     config = app_module.CronConfig(
         enabled=True,
-        hour=9,
-        minute=0,
+        times=((9, 0), (21, 0)),
         timezone_name="Europe/Moscow",
         timezone=timezone,
     )
@@ -36,17 +35,58 @@ def test_next_run_uses_same_day_when_before_configured_time() -> None:
     assert next_run == datetime(2026, 7, 9, 9, 0, tzinfo=timezone)
 
 
-def test_next_run_moves_to_tomorrow_after_configured_time() -> None:
+def test_next_run_uses_evening_slot_after_morning() -> None:
     timezone = ZoneInfo("Europe/Moscow")
     config = app_module.CronConfig(
         enabled=True,
-        hour=9,
-        minute=0,
+        times=((9, 0), (21, 0)),
         timezone_name="Europe/Moscow",
         timezone=timezone,
     )
 
     next_run = app_module._next_run_at(datetime(2026, 7, 9, 7, 30, tzinfo=UTC), config=config)
+
+    assert next_run == datetime(2026, 7, 9, 21, 0, tzinfo=timezone)
+
+
+def test_next_run_moves_to_tomorrow_after_evening() -> None:
+    timezone = ZoneInfo("Europe/Moscow")
+    config = app_module.CronConfig(
+        enabled=True,
+        times=((9, 0), (21, 0)),
+        timezone_name="Europe/Moscow",
+        timezone=timezone,
+    )
+
+    next_run = app_module._next_run_at(datetime(2026, 7, 9, 19, 0, tzinfo=UTC), config=config)
+
+    assert next_run == datetime(2026, 7, 10, 9, 0, tzinfo=timezone)
+
+
+def test_next_run_advances_at_exact_morning_slot() -> None:
+    timezone = ZoneInfo("Europe/Moscow")
+    config = app_module.CronConfig(
+        enabled=True,
+        times=((9, 0), (21, 0)),
+        timezone_name="Europe/Moscow",
+        timezone=timezone,
+    )
+
+    next_run = app_module._next_run_at(datetime(2026, 7, 9, 6, 0, tzinfo=UTC), config=config)
+
+    assert next_run == datetime(2026, 7, 9, 21, 0, tzinfo=timezone)
+
+
+def test_next_run_advances_at_exact_evening_slot() -> None:
+    timezone = ZoneInfo("Europe/Moscow")
+    config = app_module.CronConfig(
+        enabled=True,
+        times=((9, 0), (21, 0)),
+        timezone_name="Europe/Moscow",
+        timezone=timezone,
+    )
+
+    next_run = app_module._next_run_at(datetime(2026, 7, 9, 18, 0, tzinfo=UTC), config=config)
 
     assert next_run == datetime(2026, 7, 10, 9, 0, tzinfo=timezone)
 
@@ -55,16 +95,41 @@ def test_parse_cron_time_accepts_single_digit_hour() -> None:
     assert app_module._parse_cron_time("9:00") == (9, 0)
 
 
-def test_load_cron_config_defaults_to_daily_9_moscow(monkeypatch: MonkeyPatch) -> None:
+def test_parse_cron_times_sorts_and_deduplicates_slots() -> None:
+    assert app_module._parse_cron_times("21:00, 9:00,21:00") == ((9, 0), (21, 0))
+
+
+def test_load_cron_config_defaults_to_twice_daily_moscow(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("UNCLAIMED_ORDERS_CRON_ENABLED", raising=False)
     monkeypatch.delenv("UNCLAIMED_ORDERS_CRON_TIME", raising=False)
+    monkeypatch.delenv("UNCLAIMED_ORDERS_CRON_TIMES", raising=False)
     monkeypatch.delenv("UNCLAIMED_ORDERS_CRON_TZ", raising=False)
 
     config = app_module._load_cron_config()
 
     assert config.enabled is True
-    assert config.time_label == "09:00"
+    assert config.times == ((9, 0), (21, 0))
+    assert config.time_label == "09:00, 21:00"
     assert config.timezone_name == "Europe/Moscow"
+
+
+def test_load_cron_config_supports_legacy_single_time(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("UNCLAIMED_ORDERS_CRON_TIMES", raising=False)
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_TIME", "17:30")
+
+    config = app_module._load_cron_config()
+
+    assert config.times == ((17, 30),)
+    assert config.time_label == "17:30"
+
+
+def test_load_cron_config_prefers_multiple_times(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_TIME", "17:30")
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_TIMES", "09:00,21:00")
+
+    config = app_module._load_cron_config()
+
+    assert config.times == ((9, 0), (21, 0))
 
 
 def test_load_cron_config_can_be_disabled(monkeypatch: MonkeyPatch) -> None:
@@ -107,7 +172,7 @@ def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatc
                     "path": "/widgets/unclaimed-orders",
                     "name": "Pickup storage monitor",
                     "description": (
-                        "Daily pickup storage extension and customer notification status."
+                        "Scheduled pickup storage extension and customer notification status."
                     ),
                     "visibility": "org",
                 }
@@ -151,7 +216,7 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
 
     payload = response.json()
     assert response.status_code == 200
-    assert payload["cron"]["time"] == "09:00"
+    assert payload["cron"]["time"] == "09:00, 21:00"
     assert payload["last_run"]["today"] == "2026-07-09"
     assert payload["totals"] == {"checked": 1, "orders": 1, "success": 1, "errors": 0}
     assert payload["rows"] == [

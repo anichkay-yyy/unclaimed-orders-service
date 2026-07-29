@@ -43,9 +43,10 @@ from unclaimed_orders_service.widgets import (
 _log = logging.getLogger(__name__)
 _CRON_ENABLED_ENV = "UNCLAIMED_ORDERS_CRON_ENABLED"
 _CRON_TIME_ENV = "UNCLAIMED_ORDERS_CRON_TIME"
+_CRON_TIMES_ENV = "UNCLAIMED_ORDERS_CRON_TIMES"
 _CRON_TZ_ENV = "UNCLAIMED_ORDERS_CRON_TZ"
 _WIDGET_STATE_PATH_ENV = "UNCLAIMED_ORDERS_WIDGET_STATE_PATH"
-_DEFAULT_CRON_TIME = "09:00"
+_DEFAULT_CRON_TIMES = "09:00,21:00"
 _DEFAULT_CRON_TZ = "Europe/Moscow"
 _DEFAULT_WIDGET_STATE_PATH = "/data/unclaimed_orders_widget_state.json"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -54,18 +55,17 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 
 @dataclass(frozen=True, slots=True)
 class CronConfig:
-    """Daily cron configuration."""
+    """Scheduled run configuration."""
 
     enabled: bool
-    hour: int
-    minute: int
+    times: tuple[tuple[int, int], ...]
     timezone_name: str
     timezone: tzinfo
 
     @property
     def time_label(self) -> str:
         """Return the configured local fire time."""
-        return f"{self.hour:02d}:{self.minute:02d}"
+        return ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in self.times)
 
 
 @dataclass(slots=True)
@@ -377,12 +377,13 @@ async def _run_scheduled_daily(config: CronConfig) -> None:
 
 def _load_cron_config() -> CronConfig:
     enabled = _parse_bool(os.environ.get(_CRON_ENABLED_ENV), default=True)
-    hour, minute = _parse_cron_time(os.environ.get(_CRON_TIME_ENV, _DEFAULT_CRON_TIME))
+    raw_times = os.environ.get(_CRON_TIMES_ENV)
+    if raw_times is None:
+        raw_times = os.environ.get(_CRON_TIME_ENV, _DEFAULT_CRON_TIMES)
     timezone_name = os.environ.get(_CRON_TZ_ENV, _DEFAULT_CRON_TZ)
     return CronConfig(
         enabled=enabled,
-        hour=hour,
-        minute=minute,
+        times=_parse_cron_times(raw_times),
         timezone_name=timezone_name,
         timezone=_load_timezone(timezone_name),
     )
@@ -413,6 +414,14 @@ def _parse_cron_time(raw: str) -> tuple[int, int]:
     return hour, minute
 
 
+def _parse_cron_times(raw: str) -> tuple[tuple[int, int], ...]:
+    parsed_times = {_parse_cron_time(value) for value in raw.split(",") if value.strip()}
+    if not parsed_times:
+        msg = f"invalid cron times {raw!r}; expected comma-separated HH:MM values"
+        raise ValueError(msg)
+    return tuple(sorted(parsed_times))
+
+
 def _load_timezone(name: str) -> tzinfo:
     try:
         return ZoneInfo(name)
@@ -424,15 +433,13 @@ def _load_timezone(name: str) -> tzinfo:
 
 def _next_run_at(now: datetime, *, config: CronConfig) -> datetime:
     local_now = now.astimezone(config.timezone)
-    candidate = local_now.replace(
-        hour=config.hour,
-        minute=config.minute,
-        second=0,
-        microsecond=0,
-    )
-    if candidate <= local_now:
-        candidate += timedelta(days=1)
-    return candidate
+    candidates = []
+    for hour, minute in config.times:
+        candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= local_now:
+            candidate += timedelta(days=1)
+        candidates.append(candidate)
+    return min(candidates)
 
 
 def _seconds_until(target: datetime) -> float:
