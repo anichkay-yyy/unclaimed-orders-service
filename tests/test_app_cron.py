@@ -194,6 +194,7 @@ def test_widget_html_exposes_order_and_carrier_filters(monkeypatch: MonkeyPatch)
     assert 'data-carrier="yandex"' in html
     assert "String(row.order_id || \"\")" in html
     assert "carrierKey(row.carrier) === state.carrier" in html
+    assert 'normalized === "магнит пост"' in html
     assert 'window.location.pathname.replace(/[/]$/, "")' in html
 
 

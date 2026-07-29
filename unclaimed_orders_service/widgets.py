@@ -424,7 +424,11 @@ def render_widget_html() -> str:
 
     function carrierKey(value) {
       const normalized = String(value || "").trim().toLocaleLowerCase("ru-RU");
-      if (normalized === "5post" || normalized === "fivepost") return "fivepost";
+      if (
+        normalized === "5post" ||
+        normalized === "fivepost" ||
+        normalized === "магнит пост"
+      ) return "fivepost";
       if (normalized === "yandex" || normalized === "яндекс") return "yandex";
       return normalized;
     }
