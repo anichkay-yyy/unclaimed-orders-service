@@ -140,6 +140,22 @@ def test_load_cron_config_can_be_disabled(monkeypatch: MonkeyPatch) -> None:
     assert config.enabled is False
 
 
+def test_load_top_buyer_ids_uses_defaults_and_env_override(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("UNCLAIMED_ORDERS_TOP_BUYER_IDS", raising=False)
+
+    assert app_module._load_top_buyer_ids() == {
+        "11281317",
+        "11326069",
+        "11205685",
+        "11376307",
+        "11281870",
+    }
+
+    monkeypatch.setenv("UNCLAIMED_ORDERS_TOP_BUYER_IDS", "11281317, 42,11281317")
+
+    assert app_module._load_top_buyer_ids() == {"11281317", "42"}
+
+
 def test_yandex_session_state_warns_before_expiration(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("YANDEX_DELIVERY_SESSION_ID", "session-id")
     monkeypatch.setenv("YANDEX_DELIVERY_CLIENT_ID", "client-id")
@@ -180,7 +196,7 @@ def test_widgets_catalog_exposes_unclaimed_orders_widget(monkeypatch: MonkeyPatc
         }
 
 
-def test_widget_html_exposes_order_and_carrier_filters(monkeypatch: MonkeyPatch) -> None:
+def test_widget_html_exposes_order_carrier_and_top_filters(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
 
     with TestClient(app_module.app) as client:
@@ -192,6 +208,10 @@ def test_widget_html_exposes_order_and_carrier_filters(monkeypatch: MonkeyPatch)
     assert 'aria-label="Поиск по номеру заказа"' in html
     assert 'data-carrier="fivepost"' in html
     assert 'data-carrier="yandex"' in html
+    assert 'id="topFilter"' in html
+    assert '<option value="top">Только топы</option>' in html
+    assert 'row.is_top === true' in html
+    assert '<span class="badge top">ТОП</span>' in html
     assert "String(row.order_id || \"\")" in html
     assert "carrierKey(row.carrier) === state.carrier" in html
     assert 'normalized === "магнит пост"' in html
@@ -247,6 +267,7 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
             "contact_url": "",
             "contact_label": "-",
             "message_id": "",
+            "is_top": False,
             "run_date": "2026-07-09",
             "processed_at": "2026-07-09T06:01:00+00:00",
             "channel_label": "Bitrix IM/OpenLine",
@@ -254,6 +275,42 @@ def test_widget_state_projects_last_summary(monkeypatch: MonkeyPatch) -> None:
             "reason": "extended_before_notification; client_notified",
         }
     ]
+
+
+def test_widget_state_marks_top_buyer_extension_without_notification(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UNCLAIMED_ORDERS_CRON_ENABLED", "0")
+    _reset_cron_state()
+    app_module._cron_state.last_status = "succeeded"
+    app_module._cron_state.last_summary = {
+        "today": "2026-09-05",
+        "mode": "fivepost_live",
+        "checked": 1,
+        "decisions": [
+            {
+                "order_id": "458779-wr3s0",
+                "action": DecisionAction.EXTENDED,
+                "reason": "top_buyer_extended_without_notification",
+                "new_deadline": "2026-09-10",
+                "is_top": True,
+            }
+        ],
+    }
+
+    try:
+        with TestClient(app_module.app) as client:
+            response = client.get("/widgets/unclaimed-orders/state")
+    finally:
+        _reset_cron_state()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["totals"] == {"checked": 1, "orders": 1, "success": 1, "errors": 0}
+    assert payload["rows"][0]["outcome"] == "extended"
+    assert payload["rows"][0]["is_top"] is True
+    assert payload["rows"][0]["channel_label"] == "-"
+    assert payload["rows"][0]["reason"] == "Топ-клиент: хранение продлено без уведомления"
 
 
 def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyPatch) -> None:
@@ -299,6 +356,7 @@ def test_widget_state_marks_bitrix_contact_missing_as_error(monkeypatch: MonkeyP
             "contact_url": "",
             "contact_label": "-",
             "message_id": "",
+            "is_top": False,
             "run_date": "2026-07-09",
             "processed_at": "",
             "channel_label": "-",
@@ -375,6 +433,7 @@ def test_widget_state_projects_carrier_auth_error(monkeypatch: MonkeyPatch) -> N
             "contact_url": "",
             "contact_label": "-",
             "message_id": "",
+            "is_top": False,
             "run_date": "2026-07-15",
             "processed_at": "",
             "channel_label": "-",

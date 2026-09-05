@@ -83,6 +83,7 @@ class RunDecision:
     contact_url: str | None = None
     row_key: str | None = None
     carrier: str | None = None
+    is_top: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +154,7 @@ class UnclaimedOrdersService:
         for order in orders:
             days_left = (order.pickup_deadline - today).days
             carrier = _order_carrier(order)
+            is_top = _is_top_buyer(order)
             if days_left > self._policy.notify_window_days:
                 decisions.append(
                     RunDecision(
@@ -160,6 +162,7 @@ class UnclaimedOrdersService:
                         DecisionAction.SKIPPED,
                         "outside_window",
                         carrier=carrier,
+                        is_top=is_top,
                     )
                 )
                 continue
@@ -173,6 +176,7 @@ class UnclaimedOrdersService:
                         DecisionAction.SKIPPED,
                         "extension_not_allowed_or_already_extended",
                         carrier=carrier,
+                        is_top=is_top,
                     )
                 )
                 continue
@@ -190,6 +194,7 @@ class UnclaimedOrdersService:
                         DecisionAction.SKIPPED,
                         "extension_deadline_not_confirmed",
                         carrier=carrier,
+                        is_top=is_top,
                     )
                 )
                 continue
@@ -197,11 +202,19 @@ class UnclaimedOrdersService:
                 RunDecision(
                     order_id=order.external_id,
                     action=DecisionAction.EXTENDED,
-                    reason="extended_before_notification",
+                    reason=(
+                        "top_buyer_extended_without_notification"
+                        if is_top
+                        else "extended_before_notification"
+                    ),
                     new_deadline=extension.new_deadline,
                     carrier=carrier,
+                    is_top=is_top,
                 )
             )
+
+            if is_top:
+                continue
 
             try:
                 notification = await self._notifier.notify(
@@ -225,6 +238,7 @@ class UnclaimedOrdersService:
                     contact_id=notification.contact_id,
                     contact_url=notification.contact_url,
                     carrier=carrier,
+                    is_top=is_top,
                 )
             )
 
@@ -240,6 +254,7 @@ class UnclaimedOrdersService:
             DecisionAction.OPERATOR_TASK,
             reason,
             carrier=_order_carrier(order),
+            is_top=_is_top_buyer(order),
         )
 
     async def _carrier_failure_task(
@@ -269,6 +284,10 @@ def _order_carrier(order: PickupOrder) -> str:
     if isinstance(carrier, str) and carrier.strip():
         return carrier.strip()
     return "5post"
+
+
+def _is_top_buyer(order: PickupOrder) -> bool:
+    return order.metadata.get("is_top_buyer") is True
 
 
 def _consume_listing_failures(carrier: CarrierClient) -> tuple[CarrierListFailure, ...]:

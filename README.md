@@ -17,13 +17,16 @@ Current carrier sources: SafeRoute/Magnit Post, 5Post, and Yandex Delivery.
 6. Exclude already-extended orders. For 5Post the source of truth is carrier
    `details.expirationDateExtensionAllowed == false`; for Yandex it is a
    successful storage-period `edit_request`; other carriers fall back to ERP.
-7. Find the Bitrix contact by email with `crm.contact.list`.
-8. After storage is extended, notify the Bitrix contact: prefer a non-web Open
+7. If the ERP buyer belongs to `UNCLAIMED_ORDERS_TOP_BUYER_IDS`, keep the
+   successful extension but suppress the customer notification and mark the
+   order as a top buyer in the widget.
+8. Find the Bitrix contact by email with `crm.contact.list`.
+9. After storage is extended, notify the Bitrix contact: prefer a non-web Open
    Line chat linked to the contact; exclude online-chat connectors
    (`integracio_chat`, `livechat`).
-9. Fall back to the contact/customer email when no allowed Open Line chat exists
+10. Fall back to the contact/customer email when no allowed Open Line chat exists
    or Open Line sending fails.
-10. Create an operator task when extension or notification cannot be completed.
+11. Create an operator task when extension or notification cannot be completed.
 
 Customer message after a successful extension:
 
@@ -48,6 +51,7 @@ The service starts an embedded twice-daily scheduler by default:
 UNCLAIMED_ORDERS_CRON_ENABLED=1
 UNCLAIMED_ORDERS_CRON_TIMES=09:00,21:00
 UNCLAIMED_ORDERS_CRON_TZ=Europe/Moscow
+UNCLAIMED_ORDERS_TOP_BUYER_IDS=11281317,11326069,11205685,11376307,11281870
 ```
 
 `UNCLAIMED_ORDERS_CRON_TIME` remains supported for deployments configured with

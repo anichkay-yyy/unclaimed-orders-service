@@ -102,6 +102,7 @@ class FakeErpRecord:
     order_number: str | None = None
     email: str | None = None
     phone: str | None = None
+    buyer_id: str | None = None
     already_extended: bool = False
     error: str | None = None
 
@@ -152,6 +153,33 @@ async def test_extends_and_notifies_due_order() -> None:
         "Заберите, пожалуйста, заказ до этого времени."
     )
     assert tasks.reasons == []
+
+
+async def test_extends_top_buyer_order_without_notification() -> None:
+    today = date(2026, 9, 5)
+    new_deadline = today + timedelta(days=6)
+    top_order = PickupOrder(
+        external_id="top-order",
+        recipient_name="Ирина",
+        pickup_deadline=today + timedelta(days=1),
+        status="waiting_pickup",
+        email="client@example.com",
+        metadata={"is_top_buyer": True},
+    )
+    carrier = FakeCarrier(
+        orders=[top_order],
+        result=ExtensionResult(ok=True, new_deadline=new_deadline),
+    )
+    notifier = FakeNotifier()
+
+    summary = await UnclaimedOrdersService(carrier, notifier, FakeTasks()).run_daily(today=today)
+
+    assert carrier.extended == ["top-order"]
+    assert notifier.messages == []
+    assert len(summary.decisions) == 1
+    assert summary.decisions[0].action is DecisionAction.EXTENDED
+    assert summary.decisions[0].reason == "top_buyer_extended_without_notification"
+    assert summary.decisions[0].is_top is True
 
 
 async def test_skips_order_outside_window() -> None:
@@ -324,18 +352,23 @@ async def test_erp_email_carrier_enriches_order_before_domain_flow() -> None:
             order_number="420861",
             email="erp@example.com",
             phone="+7 967 612 79 60",
+            buyer_id="11281317",
             already_extended=False,
         )
     )
 
-    orders = await ErpEmailCarrierClient(carrier=carrier, erp=erp).list_waiting_pickup_orders(
-        today=today
-    )
+    orders = await ErpEmailCarrierClient(
+        carrier=carrier,
+        erp=erp,
+        top_buyer_ids=frozenset({"11281317"}),
+    ).list_waiting_pickup_orders(today=today)
 
     assert erp.lookups == ["m-1"]
     assert orders[0].email == "erp@example.com"
     assert orders[0].metadata["erp_order_number"] == "420861"
     assert orders[0].metadata["erp_phone"] == "+7 967 612 79 60"
+    assert orders[0].metadata["erp_buyer_id"] == "11281317"
+    assert orders[0].metadata["is_top_buyer"] is True
 
 
 async def test_erp_email_carrier_does_not_enrich_outside_window_orders() -> None:
