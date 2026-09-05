@@ -53,6 +53,7 @@ async def test_erp_source_lookup_returns_first_order_email(
             {
                 "id": 1,
                 "number": "427634",
+                "buyer_id": 11281317,
                 "status": "sent",
                 "delivery_data": {
                     "email": "client@example.com",
@@ -78,6 +79,7 @@ async def test_erp_source_lookup_returns_first_order_email(
     assert record.lookup_number == "427634koibf"
     assert record.order_number == "427634"
     assert record.email == "client@example.com"
+    assert record.buyer_id == "11281317"
     assert record.already_extended is False
     assert record.platform_order["id"] == 1
     assert service.calls[0] == {
@@ -114,6 +116,27 @@ async def test_erp_source_lookup_prefers_customer_phone(
     assert record.found is True
     assert record.email == "info@graniphoto.ru"
     assert record.phone == "+7 967 612 79 60"
+
+
+async def test_erp_source_lookup_reads_nested_buyer_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakePlatformService(
+        orders=[
+            {
+                "id": 1,
+                "number": "430339",
+                "buyer": {"id": "11326069"},
+                "delivery_data": {"email": "client@example.com"},
+            }
+        ]
+    )
+    monkeypatch.setattr("unclaimed_orders_service.erp._build_platform_service", lambda: service)
+    monkeypatch.setattr("unclaimed_orders_service.erp._normalize_track_number", _fake_normalize)
+
+    record = await ErpSourceLookup().find_order("430339")
+
+    assert record.buyer_id == "11326069"
 
 
 async def test_erp_source_lookup_stops_when_email_is_missing(

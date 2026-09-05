@@ -1415,6 +1415,7 @@ class ErpEmailCarrierClient:
     carrier: Any
     erp: Any
     notify_window_days: int = 2
+    top_buyer_ids: frozenset[str] = frozenset()
 
     async def list_waiting_pickup_orders(self, *, today: date) -> list[PickupOrder]:
         """Return orders, enriching ERP data only when the order can be acted on."""
@@ -1435,8 +1436,11 @@ class ErpEmailCarrierClient:
                 "erp_found": getattr(record, "found", False),
                 "erp_order_number": getattr(record, "order_number", None),
                 "erp_phone": getattr(record, "phone", None),
+                "erp_buyer_id": getattr(record, "buyer_id", None),
                 "erp_error": getattr(record, "error", None),
             }
+            buyer_id = str(metadata.get("erp_buyer_id") or "").strip()
+            metadata["is_top_buyer"] = buyer_id in self.top_buyer_ids
             already_extended = order.already_extended
             if not metadata.get("already_extended_source"):
                 already_extended = bool(

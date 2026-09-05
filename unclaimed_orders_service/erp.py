@@ -31,6 +31,7 @@ class ErpOrderRecord:
     order_number: str | None = None
     email: str | None = None
     phone: str | None = None
+    buyer_id: str | None = None
     already_extended: bool = False
     platform_order: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -76,6 +77,7 @@ class ErpSourceLookup:
             return ErpOrderRecord(lookup_number=lookup_number, found=False, error=str(exc))
         email = _extract_email(platform_order)
         phone = _extract_phone(platform_order)
+        buyer_id = _extract_buyer_id(platform_order)
         already_extended = _extract_already_extended(platform_order)
         if not email:
             return ErpOrderRecord(
@@ -83,6 +85,7 @@ class ErpSourceLookup:
                 found=True,
                 order_number=resolved_order_number,
                 phone=phone,
+                buyer_id=buyer_id,
                 already_extended=already_extended,
                 platform_order=platform_order,
                 error="email_not_found",
@@ -93,6 +96,7 @@ class ErpSourceLookup:
             order_number=resolved_order_number,
             email=email,
             phone=phone,
+            buyer_id=buyer_id,
             already_extended=already_extended,
             platform_order=platform_order,
         )
@@ -601,6 +605,19 @@ def _extract_phone(platform_order: dict[str, Any]) -> str | None:
                 return str(value).strip() or None
     value = platform_order.get("recipient_phone") or platform_order.get("phone")
     return str(value).strip() if value else None
+
+
+def _extract_buyer_id(platform_order: dict[str, Any]) -> str | None:
+    value = platform_order.get("buyer_id")
+    if value is not None:
+        return str(value).strip() or None
+
+    buyer = platform_order.get("buyer")
+    if isinstance(buyer, dict):
+        value = buyer.get("id")
+        if value is not None:
+            return str(value).strip() or None
+    return None
 
 
 def _extract_already_extended(platform_order: dict[str, Any]) -> bool:

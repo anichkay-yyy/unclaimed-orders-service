@@ -46,9 +46,13 @@ _CRON_TIME_ENV = "UNCLAIMED_ORDERS_CRON_TIME"
 _CRON_TIMES_ENV = "UNCLAIMED_ORDERS_CRON_TIMES"
 _CRON_TZ_ENV = "UNCLAIMED_ORDERS_CRON_TZ"
 _WIDGET_STATE_PATH_ENV = "UNCLAIMED_ORDERS_WIDGET_STATE_PATH"
+_TOP_BUYER_IDS_ENV = "UNCLAIMED_ORDERS_TOP_BUYER_IDS"
 _DEFAULT_CRON_TIMES = "09:00,21:00"
 _DEFAULT_CRON_TZ = "Europe/Moscow"
 _DEFAULT_WIDGET_STATE_PATH = "/data/unclaimed_orders_widget_state.json"
+_DEFAULT_TOP_BUYER_IDS = frozenset(
+    {"11281317", "11326069", "11205685", "11376307", "11281870"}
+)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -280,6 +284,7 @@ def _build_daily_service() -> tuple[UnclaimedOrdersService, str]:
                 carrier=ErpEmailCarrierClient(
                     carrier=carrier,
                     erp=ErpSourceLookup(),
+                    top_buyer_ids=_load_top_buyer_ids(),
                 ),
                 notifier=BitrixContactNotifier(bitrix),
                 operator_tasks=DryRunOperatorTasks(),
@@ -387,6 +392,13 @@ def _load_cron_config() -> CronConfig:
         timezone_name=timezone_name,
         timezone=_load_timezone(timezone_name),
     )
+
+
+def _load_top_buyer_ids() -> frozenset[str]:
+    raw = os.environ.get(_TOP_BUYER_IDS_ENV)
+    if raw is None:
+        return _DEFAULT_TOP_BUYER_IDS
+    return frozenset(value.strip() for value in raw.split(",") if value.strip())
 
 
 def _parse_bool(raw: str | None, *, default: bool) -> bool:

@@ -21,6 +21,9 @@ _REASON_LABELS = {
     "yandex_extension_status_timeout": "Яндекс не подтвердил продление за 10 минут",
     "yandex_extension_timeout": "Таймаут продления в Яндекс Доставке",
     "yandex_extension_network_error": "Сетевая ошибка продления в Яндекс Доставке",
+    "top_buyer_extended_without_notification": (
+        "Топ-клиент: хранение продлено без уведомления"
+    ),
 }
 
 
@@ -241,7 +244,13 @@ def render_widget_html() -> str:
       background: #fbfcfe;
     }
     tr:last-child td { border-bottom: 0; }
-    .order { font-weight: 700; }
+    .order {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-weight: 700;
+    }
     .muted { color: var(--muted); }
     .badge {
       display: inline-flex;
@@ -257,6 +266,7 @@ def render_widget_html() -> str:
     .badge.ok { background: var(--ok-bg); color: var(--ok); }
     .badge.err { background: var(--err-bg); color: var(--err); }
     .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    .badge.top { background: #ffe4e6; color: #9f1239; }
     .empty {
       padding: 28px 16px;
       color: var(--muted);
@@ -332,6 +342,11 @@ def render_widget_html() -> str:
           <option value="success">Успешно</option>
           <option value="error">Ошибки</option>
         </select>
+        <select id="topFilter" aria-label="Тип клиента">
+          <option value="all">Все клиенты</option>
+          <option value="top">Только топы</option>
+          <option value="regular">Без топов</option>
+        </select>
         <button id="refreshButton" type="button">Обновить</button>
       </div>
     </section>
@@ -382,6 +397,7 @@ def render_widget_html() -> str:
     const carrierButtons = Array.from(document.querySelectorAll("[data-carrier]"));
     const dateFilter = document.getElementById("dateFilter");
     const resultFilter = document.getElementById("resultFilter");
+    const topFilter = document.getElementById("topFilter");
     const refreshButton = document.getElementById("refreshButton");
 
     function text(value) {
@@ -438,7 +454,8 @@ def render_widget_html() -> str:
         orderSearch.value.trim() ||
         state.carrier !== "all" ||
         dateFilter.value ||
-        resultFilter.value !== "all"
+        resultFilter.value !== "all" ||
+        topFilter.value !== "all"
       );
     }
 
@@ -461,6 +478,8 @@ def render_widget_html() -> str:
       if (resultFilter.value === "success") {
         rows = rows.filter((row) => row.result !== "error");
       }
+      if (topFilter.value === "top") rows = rows.filter((row) => row.is_top === true);
+      if (topFilter.value === "regular") rows = rows.filter((row) => row.is_top !== true);
       return rows;
     }
 
@@ -483,7 +502,10 @@ def render_widget_html() -> str:
       rowsEl.innerHTML = rows.map((row) => `
         <tr>
           <td>
-            <div class="order">${escapeHtml(row.order_id)}</div>
+            <div class="order">
+              <span>${escapeHtml(row.order_id)}</span>
+              ${row.is_top === true ? '<span class="badge top">ТОП</span>' : ""}
+            </div>
             <div class="muted">${escapeHtml(row.carrier)} · ${escapeHtml(row.run_date)}</div>
           </td>
           <td>${contactLink(row)}</td>
@@ -561,6 +583,7 @@ def render_widget_html() -> str:
     });
     dateFilter.addEventListener("change", renderRows);
     resultFilter.addEventListener("change", renderRows);
+    topFilter.addEventListener("change", renderRows);
     load();
     setInterval(load, 60000);
   </script>
@@ -569,11 +592,11 @@ def render_widget_html() -> str:
 """
 
 
-def _history_rows(run_history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+def _history_rows(run_history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     if not isinstance(run_history, Sequence) or isinstance(run_history, (str, bytes)):
         return []
 
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     for run in run_history:
         if not isinstance(run, Mapping):
             continue
@@ -603,7 +626,7 @@ def _summary_rows(
     *,
     run_date: str | None = None,
     processed_at: str | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     if not summary:
         return []
     decisions = summary.get("decisions")
@@ -628,6 +651,7 @@ def _summary_rows(
                 "contact_id": None,
                 "contact_url": None,
                 "message_id": None,
+                "is_top": False,
                 "run_date": run_date,
                 "processed_at": processed_at,
                 "reasons": [],
@@ -649,6 +673,8 @@ def _summary_rows(
             row["contact_url"] = _optional_text(decision.get("contact_url"))
         if _optional_text(decision.get("message_id")):
             row["message_id"] = _optional_text(decision.get("message_id"))
+        if _bool_value(decision.get("is_top")):
+            row["is_top"] = True
         _apply_action(row, action)
 
     return [_finalize_row(row) for row in grouped.values() if _show_widget_row(row)]
@@ -677,7 +703,7 @@ def _apply_action(row: dict[str, Any], action: str | None) -> None:
         row["outcome"] = "skipped"
 
 
-def _finalize_row(row: Mapping[str, Any]) -> dict[str, str]:
+def _finalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
     channel = _optional_text(row.get("channel"))
     return {
         "order_id": _optional_text(row.get("order_id")) or "unknown",
@@ -688,6 +714,7 @@ def _finalize_row(row: Mapping[str, Any]) -> dict[str, str]:
         "contact_url": _optional_text(row.get("contact_url")) or "",
         "contact_label": _contact_label(row),
         "message_id": _optional_text(row.get("message_id")) or "",
+        "is_top": _bool_value(row.get("is_top")),
         "run_date": _optional_text(row.get("run_date")) or "",
         "processed_at": _optional_text(row.get("processed_at")) or "",
         "channel_label": _channel_label(channel),
@@ -705,6 +732,14 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(_enum_value(value)).strip()
     return text or None
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 def _date_text(value: Any) -> str:
